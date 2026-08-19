@@ -13,7 +13,7 @@ import { installToolchainGitRunner } from "./toolchain-git";
 import type { BrowserCapabilitySnapshot } from "../contract/browser";
 import { browserCapabilityRuntime } from "./browser-capability-runtime";
 import { setBashChildListener } from "./desktop-bash-exec";
-import { abortLiveRpcSession, syncBrowserToolsForAllSessions } from "./rpc-manager";
+import { abortLiveRpcSession, setCockpitRunning, syncBrowserToolsForAllSessions } from "./rpc-manager";
 import { readPiRuntimeVersion } from "./runtime-version";
 
 const piRuntimeVersion = readPiRuntimeVersion();
@@ -49,6 +49,7 @@ if (parentPort) {
     const msg = event.data as {
       type?: string;
       sessionId?: string;
+      running?: boolean;
       snapshot?: ToolchainSnapshot | BrowserCapabilitySnapshot;
     };
     if (msg?.type === "ping") {
@@ -60,6 +61,12 @@ if (parentPort) {
       if (!sessionId) return;
       const hit = abortLiveRpcSession(sessionId);
       log(`session-abort ${sessionId} ${hit ? "delivered" : "no-live-session"}`);
+      return;
+    }
+    if (msg?.type === "cockpit-running") {
+      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
+      if (!sessionId) return;
+      setCockpitRunning(sessionId, msg.running === true);
       return;
     }
     if (msg?.type === "attach-port") {

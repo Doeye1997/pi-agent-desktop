@@ -52,7 +52,7 @@ import { allowFileRoot, getAllowedFileRoots, isFilePathAllowed } from "./file-ac
 import {
   disposeAllRpcSessions,
   getRpcSession,
-  getRunningRpcSessionIds,
+  getRunningSessionIds,
   startRpcSession,
   subscribeRunningSessions,
 } from "./rpc-manager";
@@ -762,7 +762,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
           invalidFiles: indexMetrics.invalidFiles,
           indexRefreshMs: indexMetrics.totalMs,
         });
-        return { sessions, runningSessionIds: getRunningRpcSessionIds() };
+        return { sessions, runningSessionIds: getRunningSessionIds() };
       } catch (error) {
         logSessionPerformance("sessions.list", {
           traceId,
@@ -2005,7 +2005,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     },
 
     "system.runningCount": async () => {
-      const sessionIds = getRunningRpcSessionIds();
+      const sessionIds = getRunningSessionIds();
       return { count: sessionIds.length, sessionIds };
     },
   });

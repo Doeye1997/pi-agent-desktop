@@ -215,6 +215,9 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionPtyManager
       appendMainLog(`embedded Pi exited session=${sessionId} code=${exitCode}`);
       emitSessionTuiMarks();
     },
+    onRunning(sessionId, running) {
+      getHostManager()?.setCockpitRunning(sessionId, running);
+    },
   });
 
   trustedOn("desktop:start-session-tui", (_event, payload: unknown) => {

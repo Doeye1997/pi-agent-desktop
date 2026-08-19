@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { createSessionPtyManager, bundledPiCliPath } from "./session-pty.ts";
+import { bundledPiCliPath, createSessionPtyManager } from "./session-pty.ts";
+import { TUI_RUNNING_REPORTER_NAME, encodeTuiRunningMark } from "./tui-running-protocol.ts";
+
+const reporterPath = join(tmpdir(), TUI_RUNNING_REPORTER_NAME);
+
+function tuiArgs(...sessionArgs) {
+  return ["F:/bundled/pi-cli.js", ...sessionArgs, "--extension", reporterPath, "--tui-mode", "fullscreen"];
+}
 
 function createFakePty(pid) {
   let onData = () => {};
@@ -71,15 +80,10 @@ test("existing sessions resume by path while new sessions create an exact id in 
   assert.equal(first.action, "spawn");
   assert.equal(firstAgain.action, "focus");
   assert.equal(spawned.length, 2);
-  assert.deepEqual(spawned[0].args, [
-    "F:/bundled/pi-cli.js",
-    "--session",
-    "F:/PiData/session-1.jsonl",
-    "--tui-mode",
-    "fullscreen",
-  ]);
+  assert.deepEqual(spawned[0].args, tuiArgs("--session", "F:/PiData/session-1.jsonl"));
   assert.equal(spawned[0].options.cwd, "F:/project-one");
-  assert.deepEqual(spawned[1].args, ["F:/bundled/pi-cli.js", "--session-id", "sess-2", "--tui-mode", "fullscreen"]);
+  assert.equal(spawned[0].options.env.PI_DESKTOP_SESSION_ID, "sess-1");
+  assert.deepEqual(spawned[1].args, tuiArgs("--session-id", "sess-2"));
   assert.equal(spawned[1].options.cwd, "F:/project-two");
   assert.equal(spawned[0].options.name, "xterm-256color");
   assert.equal(manager.snapshotMarks()["sess-1"], "running");
@@ -112,13 +116,7 @@ test("start with a new cwd or session path restarts the live PTY", () => {
   assert.equal(spawned[0].pty.killed, true);
   assert.equal(spawned.length, 2);
   assert.equal(spawned[1].options.cwd, "F:/project-two");
-  assert.deepEqual(spawned[1].args, [
-    "F:/bundled/pi-cli.js",
-    "--session",
-    "F:/PiData/moved.jsonl",
-    "--tui-mode",
-    "fullscreen",
-  ]);
+  assert.deepEqual(spawned[1].args, tuiArgs("--session", "F:/PiData/moved.jsonl"));
 });
 
 test("PTY output, input and resize stay scoped to the matching session", () => {
@@ -150,6 +148,40 @@ test("PTY output, input and resize stay scoped to the matching session", () => {
   assert.deepEqual(output, [["sess-1", "hello"]]);
   assert.deepEqual(spawned[0].writes, ["input"]);
   assert.deepEqual(spawned[0].resizes, [[120, 50]]);
+});
+
+test("official running marks are stripped from PTY bytes and reported", () => {
+  const spawned = [];
+  const output = [];
+  const running = [];
+  const manager = createSessionPtyManager({
+    spawn() {
+      const pty = createFakePty(1);
+      spawned.push(pty);
+      return pty;
+    },
+    onData(sessionId, data) {
+      output.push([sessionId, data]);
+    },
+    onRunning(sessionId, live) {
+      running.push([sessionId, live]);
+    },
+  });
+
+  manager.start({
+    sessionId: "sess-1",
+    cwd: "F:/project",
+    nodeExecutable: "C:/Node/node.exe",
+    program: "F:/bundled/pi-cli.js",
+  });
+  spawned[0].emitData(`pre${encodeTuiRunningMark(true)}post`);
+  manager.kill("sess-1");
+
+  assert.deepEqual(output, [["sess-1", "prepost"]]);
+  assert.deepEqual(running, [
+    ["sess-1", true],
+    ["sess-1", false],
+  ]);
 });
 
 test("exited sessions become dead and can be restarted", () => {

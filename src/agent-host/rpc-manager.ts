@@ -1406,12 +1406,28 @@ export function syncBrowserToolsForAllSessions(): void {
   for (const session of getRegistry().values()) session.syncBrowserToolActivation();
 }
 
+const cockpitRunningIds = new Set<string>();
+
 export function getRunningRpcSessionIds(): string[] {
   const ids = new Set<string>();
   for (const [sessionId, session] of getRegistry()) {
     if (session.isRunning()) ids.add(session.sessionId || sessionId);
   }
   return [...ids];
+}
+
+export function setCockpitRunning(sessionId: string, running: boolean): void {
+  const id = sessionId.trim();
+  if (!id) return;
+  const has = cockpitRunningIds.has(id);
+  if (running === has) return;
+  if (running) cockpitRunningIds.add(id);
+  else cockpitRunningIds.delete(id);
+  notifyRunningChange();
+}
+
+export function getRunningSessionIds(): string[] {
+  return [...new Set([...getRunningRpcSessionIds(), ...cockpitRunningIds])];
 }
 
 // ----------------------------------------------------------------------------
@@ -1442,7 +1458,7 @@ let lastRunningSnapshot = "";
  * notification, broadcast it to subscribers. Cheap to call often.
  */
 export function notifyRunningChange(): void {
-  const ids = getRunningRpcSessionIds();
+  const ids = getRunningSessionIds();
   const snapshot = JSON.stringify([...ids].sort());
   if (snapshot === lastRunningSnapshot) return;
   lastRunningSnapshot = snapshot;

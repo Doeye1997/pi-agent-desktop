@@ -1,5 +1,6 @@
 import { findPackageJSON } from "node:module";
 import { dirname, join } from "node:path";
+import { splitTuiRunningOutput, writeTuiRunningReporter } from "./tui-running-protocol.ts";
 
 export type SessionPtyMark = "running" | "dead";
 
@@ -76,9 +77,11 @@ export function createSessionPtyManager(options: {
   spawn: SessionPtySpawn;
   onData?: (sessionId: string, data: string) => void;
   onExit?: (sessionId: string, exitCode: number) => void;
+  onRunning?: (sessionId: string, running: boolean) => void;
 }) {
   const sessions = new Map<string, LivePty>();
   const marks = new Map<string, SessionPtyMark>();
+  const reporterPath = writeTuiRunningReporter();
 
   function start(request: SessionPtyStartRequest, requestedSize: SessionPtySize = DEFAULT_SIZE) {
     const existing = sessions.get(request.sessionId);
@@ -88,27 +91,40 @@ export function createSessionPtyManager(options: {
     if (existing) {
       sessions.delete(request.sessionId);
       existing.pty.kill();
+      options.onRunning?.(request.sessionId, false);
     }
     const cols = validDimension(requestedSize.cols) ?? DEFAULT_SIZE.cols;
     const rows = validDimension(requestedSize.rows) ?? DEFAULT_SIZE.rows;
     const sessionArgs = request.sessionPath ? ["--session", request.sessionPath] : ["--session-id", request.sessionId];
-    const pty = options.spawn(request.nodeExecutable, [request.program, ...sessionArgs, "--tui-mode", "fullscreen"], {
-      cwd: request.cwd,
-      cols,
-      rows,
-      name: "xterm-256color",
-      env: { ...processEnvironment(), TERM: "xterm-256color" },
-    });
+    const pty = options.spawn(
+      request.nodeExecutable,
+      [request.program, ...sessionArgs, "--extension", reporterPath, "--tui-mode", "fullscreen"],
+      {
+        cwd: request.cwd,
+        cols,
+        rows,
+        name: "xterm-256color",
+        env: {
+          ...processEnvironment(),
+          TERM: "xterm-256color",
+          PI_DESKTOP_SESSION_ID: request.sessionId,
+        },
+      },
+    );
     const live: LivePty = { pty, cwd: request.cwd, sessionPath: request.sessionPath };
     sessions.set(request.sessionId, live);
     marks.set(request.sessionId, "running");
     pty.onData((data) => {
-      if (sessions.get(request.sessionId)?.pty === pty) options.onData?.(request.sessionId, data);
+      if (sessions.get(request.sessionId)?.pty !== pty) return;
+      const split = splitTuiRunningOutput(data);
+      if (split.running !== undefined) options.onRunning?.(request.sessionId, split.running);
+      if (split.text) options.onData?.(request.sessionId, split.text);
     });
     pty.onExit((event) => {
       if (sessions.get(request.sessionId)?.pty !== pty) return;
       sessions.delete(request.sessionId);
       marks.set(request.sessionId, "dead");
+      options.onRunning?.(request.sessionId, false);
       options.onExit?.(request.sessionId, event.exitCode);
     });
     return { action: "spawn" as const, sessionId: request.sessionId, pid: pty.pid };
@@ -134,6 +150,7 @@ export function createSessionPtyManager(options: {
       return;
     }
     marks.set(sessionId, "dead");
+    options.onRunning?.(sessionId, false);
     live.pty.kill();
   }
 

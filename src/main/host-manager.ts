@@ -147,6 +147,15 @@ export class HostManager {
     }
   }
 
+  setCockpitRunning(sessionId: string, running: boolean): void {
+    if (!this.child) return;
+    try {
+      this.child.postMessage({ type: "cockpit-running", sessionId, running });
+    } catch (error) {
+      appendMainLog(`cockpit-running post failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   /** Hand a MessagePort to the Host so a renderer can talk to it directly. */
   attachRendererPort(port: MessagePortMain): void {
     if (!this.child || this.status !== "ready") {
