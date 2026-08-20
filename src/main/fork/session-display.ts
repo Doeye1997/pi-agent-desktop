@@ -24,12 +24,14 @@ export type SessionDisplayStartResult =
 
 export type SessionDisplayManager = ReturnType<typeof createSessionDisplayManager>;
 
-type SessionDisplaySelection = Pick<SessionDisplaySession, "sessionId" | "sessionPath" | "cwd">;
+type SessionDisplaySelection = Pick<SessionDisplaySession, "sessionId" | "sessionPath" | "cwd"> & {
+  remount?: boolean;
+};
 
 export function createLatestSessionDisplayStarter(options: {
   resolveNodeExecutable: (cwd: string) => Promise<string>;
   program: () => string;
-  start: (session: SessionDisplaySession) => void;
+  start: (session: SessionDisplaySession, remount: boolean) => void;
   onError: (selection: SessionDisplaySelection, error: unknown) => void;
 }) {
   let latestSelection = 0;
@@ -42,11 +44,15 @@ export function createLatestSessionDisplayStarter(options: {
         const nodeExecutable = await options.resolveNodeExecutable(selection.cwd);
         if (selectionNumber !== latestSelection) return;
         pendingSessionId = null;
-        options.start({
-          ...selection,
-          nodeExecutable,
-          program: options.program(),
-        });
+        const { remount = false, ...session } = selection;
+        options.start(
+          {
+            ...session,
+            nodeExecutable,
+            program: options.program(),
+          },
+          remount,
+        );
       } catch (error) {
         if (selectionNumber !== latestSelection) return;
         pendingSessionId = null;
@@ -82,16 +88,6 @@ function validSize(size: SessionDisplaySize): SessionDisplaySize | null {
   return cols && rows ? { cols, rows } : null;
 }
 
-function samePlacement(live: SessionDisplaySession, request: SessionDisplaySession): boolean {
-  return (
-    live.cwd === request.cwd &&
-    live.sessionId === request.sessionId &&
-    (live.sessionPath ?? "") === (request.sessionPath ?? "") &&
-    live.nodeExecutable === request.nodeExecutable &&
-    live.program === request.program
-  );
-}
-
 function toDisplayError(error: unknown, sessionId?: string): SessionDisplayError {
   const candidate = error as { code?: unknown; message?: unknown };
   const code =
@@ -118,7 +114,16 @@ export function createSessionDisplayManager(options: {
   const sessions = new Map<string, SessionDisplaySession>();
   const marks = new Map<string, SessionDisplayMark>();
   const pendingBounds = new Map<string, SessionDisplayBounds>();
+  const replacementDeadMarks = new Map<string, number>();
   let host: SessionDisplayHost | null = null;
+
+  const consumeReplacementDeadMark = (sessionId: string): boolean => {
+    const count = replacementDeadMarks.get(sessionId) ?? 0;
+    if (count === 0) return false;
+    if (count === 1) replacementDeadMarks.delete(sessionId);
+    else replacementDeadMarks.set(sessionId, count - 1);
+    return true;
+  };
 
   const reportMark = (sessionId: string, mark: SessionDisplayMark): void => {
     marks.set(sessionId, mark);
@@ -136,6 +141,7 @@ export function createSessionDisplayManager(options: {
       return;
     }
     if (event.type === "mark") {
+      if (event.mark === "dead" && consumeReplacementDeadMark(event.sessionId)) return;
       reportMark(event.sessionId, event.mark);
       if (event.mark === "dead" && sessions.has(event.sessionId)) {
         try {
@@ -159,6 +165,7 @@ export function createSessionDisplayManager(options: {
       reportError({ ...error, sessionId });
     }
     sessions.clear();
+    replacementDeadMarks.clear();
     host = null;
   };
 
@@ -179,12 +186,14 @@ export function createSessionDisplayManager(options: {
   function start(
     request: SessionDisplaySession,
     requestedSize: SessionDisplaySize = DEFAULT_SIZE,
+    remount = false,
   ): SessionDisplayStartResult {
     const size = validSize(requestedSize) ?? DEFAULT_SIZE;
     const existing = sessions.get(request.sessionId);
-    if (existing && samePlacement(existing, request)) {
+    if (existing && !remount) {
       try {
         ensureHost().focus(request.sessionId);
+        sessions.set(request.sessionId, request);
         return { action: "focus", sessionId: request.sessionId };
       } catch (error) {
         sessions.delete(request.sessionId);
@@ -192,10 +201,12 @@ export function createSessionDisplayManager(options: {
       }
     }
     if (existing) {
+      replacementDeadMarks.set(request.sessionId, (replacementDeadMarks.get(request.sessionId) ?? 0) + 1);
       try {
         host?.kill(request.sessionId);
       } catch {
-        // The new mount still gets a chance to report a useful host error.
+        consumeReplacementDeadMark(request.sessionId);
+        // The replacement mount still gets a chance to report a useful host error.
       }
       sessions.delete(request.sessionId);
       reportMark(request.sessionId, "dead");
@@ -304,6 +315,7 @@ export function createSessionDisplayManager(options: {
     const liveSessionIds = [...sessions.keys()];
     sessions.clear();
     pendingBounds.clear();
+    replacementDeadMarks.clear();
     for (const sessionId of liveSessionIds) marks.set(sessionId, "dead");
     try {
       host?.dispose();

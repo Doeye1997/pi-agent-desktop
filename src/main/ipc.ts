@@ -238,10 +238,9 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
   const startSelectedSessionDisplay = createLatestSessionDisplayStarter({
     resolveNodeExecutable,
     program: bundledPiCliPath,
-    start: (session) => sessionDisplayManager.start(session),
+    start: (session, remount) => sessionDisplayManager.start(session, undefined, remount),
     onError(selected, error) {
       const message = error instanceof Error ? error.message : String(error);
-      sessionDisplayManager.kill(selected.sessionId);
       emitSessionDisplayError({
         code: "HOST_UNAVAILABLE",
         sessionId: selected.sessionId,
@@ -256,6 +255,7 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
     const sessionId = "sessionId" in payload ? payload.sessionId : undefined;
     const sessionPath = "sessionPath" in payload ? payload.sessionPath : undefined;
     const cwd = "cwd" in payload ? payload.cwd : undefined;
+    const remount = "remount" in payload && payload.remount === true;
     if (typeof sessionId !== "string" || !sessionId.trim()) return;
     if (typeof cwd !== "string" || !cwd.trim()) return;
     const selected = {
@@ -266,7 +266,7 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
     for (const win of trustedWindows()) {
       if (win && !win.isDestroyed()) win.webContents.send("desktop:cockpit-selection", selected);
     }
-    void startSelectedSessionDisplay.start(selected);
+    void startSelectedSessionDisplay.start({ ...selected, ...(remount ? { remount: true } : {}) });
   });
 
   trustedOn("desktop:kill-session-display", (_event, sessionId: unknown) => {

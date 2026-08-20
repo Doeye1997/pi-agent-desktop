@@ -54,7 +54,7 @@ function request(overrides = {}) {
   };
 }
 
-test("session display mounts once, focuses on repeat selection, and remounts after relocation", () => {
+test("sidebar switching focuses mounted sessions without killing their background terminals", () => {
   const host = createFakeHost();
   const manager = createSessionDisplayManager({
     createHost: () => host,
@@ -63,14 +63,40 @@ test("session display mounts once, focuses on repeat selection, and remounts aft
 
   assert.equal(manager.start(request()).action, "spawn");
   assert.equal(manager.start(request()).action, "focus");
-  assert.equal(manager.start(request({ cwd: "F:/project-two", sessionPath: "F:/PiData/moved.jsonl" })).action, "spawn");
+  assert.equal(manager.start(request({ sessionId: "sess-2", cwd: "F:/project-two" })).action, "spawn");
+  assert.equal(manager.start(request({ cwd: "F:/project-two", sessionPath: "F:/PiData/moved.jsonl" })).action, "focus");
 
   assert.equal(host.calls[0][0], "mount");
   assert.equal(host.calls[0][1].parentWindowHandle, "hwnd:cockpit");
   assert.deepEqual(host.calls[1], ["focus", "sess-1"]);
-  assert.deepEqual(host.calls[2], ["kill", "sess-1"]);
-  assert.equal(host.calls[3][0], "mount");
-  assert.equal(host.calls[3][1].session.cwd, "F:/project-two");
+  assert.equal(host.calls[2][0], "mount");
+  assert.equal(host.calls[2][1].session.sessionId, "sess-2");
+  assert.deepEqual(host.calls[3], ["focus", "sess-1"]);
+  assert.equal(host.calls.some(([operation]) => operation === "kill"), false);
+});
+
+test("explicit session relocation remounts only that session", () => {
+  const host = createFakeHost();
+  let emit;
+  const manager = createSessionDisplayManager({
+    createHost: (onEvent) => {
+      emit = onEvent;
+      return host;
+    },
+    getParentWindowHandle: () => "hwnd:cockpit",
+  });
+  manager.start(request());
+
+  assert.equal(
+    manager.start(request({ cwd: "F:/project-two", sessionPath: "F:/PiData/moved.jsonl" }), undefined, true).action,
+    "spawn",
+  );
+  assert.deepEqual(host.calls.slice(1).map(([operation]) => operation), ["kill", "mount"]);
+  manager.start(request({ cwd: "F:/project-three", sessionPath: "F:/PiData/moved-again.jsonl" }), undefined, true);
+  emit({ type: "mark", sessionId: "sess-1", mark: "dead" });
+  emit({ type: "mark", sessionId: "sess-1", mark: "dead" });
+  assert.equal(manager.snapshotMarks()["sess-1"], "running");
+  assert.equal(host.calls.some(([operation]) => operation === "dead"), false);
 });
 
 test("session display forwards composer, resize, native bounds, and theme operations", () => {

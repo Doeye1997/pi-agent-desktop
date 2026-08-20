@@ -20,9 +20,12 @@ test("cockpit renders the native session display without an HTML worktree overla
   assert.doesNotMatch(source, /worktreeAnchorRef=\{setWorktreeSlot\}/);
 });
 
-test("relocating a session restarts the cockpit TUI and refreshes the sidebar", () => {
+test("relocation remounts the active terminal and defers a background remount until selection", () => {
   assert.match(source, /onSessionRelocated=\{handleSessionRelocated\}/);
-  assert.match(source, /forkOnSelectSession\(session\)/);
+  assert.match(source, /relocatedSessionsRef\.current\.set\(session\.id, session\)/);
+  assert.match(source, /relocatedSessionsRef\.current\.get\(session\.id\)/);
+  assert.match(source, /forkOnSelectSession\(selected, Boolean\(relocatedSession\)\)/);
+  assert.match(source, /forkOnSelectSession\(session, true\)/);
 });
 
 test("cockpit keeps the original session info dropdown available without ChatWindow stats", () => {

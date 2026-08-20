@@ -38,3 +38,20 @@ test("selecting another session publishes the same start/focus path so the right
     },
   ]);
 });
+
+test("relocating a session explicitly requests a remount", () => {
+  const calls = [];
+  globalThis.window = {
+    piBridge: {
+      startSessionDisplay(session) {
+        calls.push(session);
+      },
+    },
+  };
+
+  forkOnSelectSession({ id: "sess-2", path: "F:/PiData/moved.jsonl", cwd: "F:/moved" }, true);
+
+  assert.deepEqual(calls, [
+    { sessionId: "sess-2", sessionPath: "F:/PiData/moved.jsonl", cwd: "F:/moved", remount: true },
+  ]);
+});

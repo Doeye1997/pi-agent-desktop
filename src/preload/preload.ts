@@ -152,6 +152,7 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
             ? { sessionPath: session.sessionPath.trim() }
             : {}),
           cwd: session.cwd.trim(),
+          ...(session.remount === true ? { remount: true } : {}),
         });
       }
     },

@@ -22,7 +22,6 @@ import {
   ForkProjectPickerLabel,
   ForkProjectTag,
   forkOnKillSession,
-  forkOnSelectSession,
   useForkSessionList,
   useSessionTuiMarks,
 } from "@/fork";
@@ -870,7 +869,6 @@ export function SessionSidebar({
   const handleSelectSessionFromList = useCallback(
     (s: SessionInfo) => {
       if (s.cwd) setSelectedCwd(s.cwd);
-      forkOnSelectSession(s);
       onSelectSession(s);
     },
     [onSelectSession],

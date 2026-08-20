@@ -403,6 +403,7 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !initialSessionId);
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
   const suppressCwdBumpRef = useRef(false);
+  const relocatedSessionsRef = useRef(new Map<string, SessionInfo>());
 
   // Deep link + menu actions from Electron main
   useEffect(() => {
@@ -512,9 +513,13 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
 
   const handleSelectSession = useCallback(
     (session: SessionInfo, isRestore = false) => {
-      beginSessionLoadTrace(session.id, isRestore ? "restore" : "selection");
+      const relocatedSession = relocatedSessionsRef.current.get(session.id);
+      const selected = relocatedSession ?? session;
+      if (relocatedSession) relocatedSessionsRef.current.delete(session.id);
+      beginSessionLoadTrace(selected.id, isRestore ? "restore" : "selection");
+      forkOnSelectSession(selected, Boolean(relocatedSession));
       setNewSessionCwd(null);
-      setSelectedSession(session);
+      setSelectedSession(selected);
       setSessionKey((k) => k + 1);
       setInitialSessionRestored(true);
       // On mobile, collapse the overlay drawer so the chat is revealed after pick.
@@ -527,7 +532,7 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
       // Skip router.replace when restoring from URL — the param is already correct
       // and replacing it during the initial desktop restore causes a remount loop
       if (!isRestore) {
-        router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
+        router.replace(`?session=${encodeURIComponent(selected.id)}`, { scroll: false });
       }
     },
     [router, isMobile, role],
@@ -541,7 +546,9 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
         setActiveCwd(session.cwd);
         setNewSessionCwd(session.path ? null : session.cwd);
         setSessionKey((k) => k + 1);
-        forkOnSelectSession(session);
+        forkOnSelectSession(session, true);
+      } else {
+        relocatedSessionsRef.current.set(session.id, session);
       }
       setRefreshKey((k) => k + 1);
       setExplorerRefreshKey((k) => k + 1);

@@ -141,7 +141,7 @@ export interface PiBridge {
   performToolchainAction: (request: ToolchainActionRequest) => Promise<PublicToolchainState>;
   requestHostPort: () => void;
   abortSession: (sessionId: string) => void;
-  startSessionDisplay: (session: { sessionId: string; sessionPath?: string; cwd: string }) => void;
+  startSessionDisplay: (session: { sessionId: string; sessionPath?: string; cwd: string; remount?: boolean }) => void;
   killSessionDisplay: (sessionId: string) => void;
   writeSessionDisplay: (sessionId: string, data: string) => void;
   resizeSessionDisplay: (sessionId: string, cols: number, rows: number) => void;

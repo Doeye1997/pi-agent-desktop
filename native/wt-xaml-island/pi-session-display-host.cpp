@@ -1151,7 +1151,11 @@ namespace
                 "command=mount session=" + request.sessionId +
                 " sessionPath=" + request.sessionPath +
                 " cwd=" + request.cwd);
-            kill(request.sessionId);
+            if (find(request.sessionId))
+            {
+                focus(request.sessionId);
+                return;
+            }
             for (const auto& [existingId, existing] : _sessions)
             {
                 ShowWindow(existing->host, SW_HIDE);
