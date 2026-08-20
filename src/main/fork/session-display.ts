@@ -92,6 +92,13 @@ export function createSessionDisplayManager(options: {
   const onHostEvent = (event: SessionDisplayHostEvent): void => {
     if (event.type === "mark") {
       reportMark(event.sessionId, event.mark);
+      if (event.mark === "dead" && sessions.has(event.sessionId)) {
+        try {
+          host?.dead(event.sessionId);
+        } catch (error) {
+          reportError(toDisplayError(error, event.sessionId));
+        }
+      }
       return;
     }
     if (event.type === "error") {

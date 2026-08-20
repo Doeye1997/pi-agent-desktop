@@ -16,6 +16,7 @@ Commands:
 - `resize`: `{ sessionId, size: { cols, rows } }`
 - `bounds`: `{ sessionId, bounds: { x, y, width, height, scaleFactor } }`
 - `theme`: `{ theme: "light" | "dark" }`
+- `dead`: `{ sessionId }`
 - `kill`: `{ sessionId }`
 - `dispose`
 

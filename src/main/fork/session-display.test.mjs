@@ -25,6 +25,9 @@ function createFakeHost() {
     setTheme(theme) {
       calls.push(["theme", theme]);
     },
+    dead(sessionId) {
+      calls.push(["dead", sessionId]);
+    },
     kill(sessionId) {
       calls.push(["kill", sessionId]);
     },
@@ -133,6 +136,7 @@ test("native process exit preserves the mounted display for Enter restart", () =
 
   emit({ type: "mark", sessionId: "sess-1", mark: "dead" });
   assert.equal(manager.snapshotMarks()["sess-1"], "dead");
+  assert.deepEqual(host.calls.at(-1), ["dead", "sess-1"]);
 
   manager.write("sess-1", "\r");
   emit({ type: "mark", sessionId: "sess-1", mark: "running" });

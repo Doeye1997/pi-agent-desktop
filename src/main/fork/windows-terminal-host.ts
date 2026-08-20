@@ -25,6 +25,7 @@ export type SessionDisplayHost = {
   resize: (sessionId: string, size: SessionDisplaySize) => void;
   setBounds: (sessionId: string, bounds: SessionDisplayBounds) => void;
   setTheme: (theme: SessionDisplayTheme) => void;
+  dead: (sessionId: string) => void;
   kill: (sessionId: string) => void;
   dispose: () => void;
 };
@@ -36,6 +37,7 @@ type HostCommand =
   | { type: "resize"; sessionId: string; size: SessionDisplaySize }
   | { type: "bounds"; sessionId: string; bounds: SessionDisplayBounds }
   | { type: "theme"; theme: SessionDisplayTheme }
+  | { type: "dead"; sessionId: string }
   | { type: "kill"; sessionId: string }
   | { type: "dispose" };
 
@@ -172,6 +174,7 @@ export function createWindowsTerminalHost(options: {
     resize: (sessionId, size) => sendCommand(child, { type: "resize", sessionId, size }),
     setBounds: (sessionId, bounds) => sendCommand(child, { type: "bounds", sessionId, bounds }),
     setTheme: (theme) => sendCommand(child, { type: "theme", theme }),
+    dead: (sessionId) => sendCommand(child, { type: "dead", sessionId }),
     kill: (sessionId) => sendCommand(child, { type: "kill", sessionId }),
     dispose: () => {
       if (disposed) return;

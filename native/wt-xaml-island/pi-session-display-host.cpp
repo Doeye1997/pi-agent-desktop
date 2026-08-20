@@ -62,9 +62,11 @@ using winrt::Windows::UI::Xaml::FocusState;
 using winrt::Windows::UI::Xaml::HorizontalAlignment;
 using winrt::Windows::UI::Xaml::Thickness;
 using winrt::Windows::UI::Xaml::VerticalAlignment;
+using winrt::Windows::UI::Xaml::Visibility;
 using winrt::Windows::UI::Xaml::Controls::Border;
 using winrt::Windows::UI::Xaml::Controls::Grid;
 using winrt::Windows::UI::Xaml::Controls::TextBox;
+using winrt::Windows::UI::Xaml::Controls::TextBlock;
 using winrt::Windows::UI::Xaml::Input::KeyRoutedEventArgs;
 using winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs;
 using winrt::Windows::UI::Xaml::Media::SolidColorBrush;
@@ -669,6 +671,8 @@ namespace
                 TermControl control,
                 ITerminalConnection connection,
                 Grid root,
+                Border deadLayer,
+                TextBlock deadMessage,
                 Border card,
                 TextBox input) :
             request(std::move(sessionRequest)),
@@ -680,6 +684,8 @@ namespace
             termControl(std::move(control)),
             terminalConnection(std::move(connection)),
             rootGrid(std::move(root)),
+            deadSurface(std::move(deadLayer)),
+            deadText(std::move(deadMessage)),
             composerCard(std::move(card)),
             composer(std::move(input))
         {
@@ -837,6 +843,13 @@ namespace
             composer.Background(SolidColorBrush(inputBackground));
             composer.BorderBrush(SolidColorBrush(border));
             composer.Foreground(SolidColorBrush(foreground));
+            deadSurface.Background(SolidColorBrush(background));
+            deadText.Foreground(SolidColorBrush(foreground));
+        }
+
+        void showDeadSurface(bool visible)
+        {
+            deadSurface.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
         }
 
         SessionRequest request;
@@ -848,6 +861,8 @@ namespace
         TermControl termControl{ nullptr };
         ITerminalConnection terminalConnection{ nullptr };
         Grid rootGrid{ nullptr };
+        Border deadSurface{ nullptr };
+        TextBlock deadText{ nullptr };
         Border composerCard{ nullptr };
         TextBox composer{ nullptr };
         winrt::event_token stateChanged{};
@@ -982,6 +997,20 @@ namespace
             root.VerticalAlignment(VerticalAlignment::Stretch);
             root.Children().Append(control);
 
+            auto deadSurface = Border{};
+            deadSurface.HorizontalAlignment(HorizontalAlignment::Stretch);
+            deadSurface.VerticalAlignment(VerticalAlignment::Stretch);
+            deadSurface.IsHitTestVisible(false);
+            deadSurface.Visibility(Visibility::Collapsed);
+            auto deadText = TextBlock{};
+            deadText.Text(winrt::hstring(L"Pi exited. Click the terminal and press Enter to restart."));
+            deadText.HorizontalAlignment(HorizontalAlignment::Center);
+            deadText.VerticalAlignment(VerticalAlignment::Center);
+            deadText.FontSize(14.0);
+            deadText.TextWrapping(winrt::Windows::UI::Xaml::TextWrapping::Wrap);
+            deadSurface.Child(deadText);
+            root.Children().Append(deadSurface);
+
             auto composerCard = Border{};
             composerCard.HorizontalAlignment(HorizontalAlignment::Stretch);
             composerCard.VerticalAlignment(VerticalAlignment::Bottom);
@@ -1030,6 +1059,8 @@ namespace
                 control,
                 connection,
                 root,
+                deadSurface,
+                deadText,
                 composerCard,
                 composer);
             session->applyTheme(_darkTheme);
@@ -1118,6 +1149,15 @@ namespace
                 const auto settings = session->settingsImpl.as<IControlSettings>();
                 session->termControl.UpdateControlSettings(settings, settings);
                 session->applyTheme(dark);
+            }
+        }
+
+        void dead(const std::string& sessionId)
+        {
+            const auto session = find(sessionId);
+            if (session)
+            {
+                session->showDeadSurface(true);
             }
         }
 
@@ -1266,6 +1306,7 @@ namespace
             session->termControl.Connection(connection);
             session->terminalConnection = connection;
             session->processWatchStarted = false;
+            session->showDeadSurface(false);
             watchConnection(session);
             connection.Start();
             emitMark(sessionId, "running");
@@ -1345,6 +1386,10 @@ namespace
                 else if (type == L"theme")
                 {
                     host.theme(command);
+                }
+                else if (type == L"dead")
+                {
+                    host.dead(namedString(command, L"sessionId"));
                 }
                 else if (type == L"kill")
                 {
