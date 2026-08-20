@@ -23,7 +23,12 @@ import {
 import { ToolchainError } from "../shared/toolchains/errors";
 import type { BrowserService } from "./browser/browser-service";
 import { BrowserError } from "./browser/browser-error";
-import { bundledPiCliPath, createSessionDisplayManager, type SessionDisplayManager } from "./fork/session-display";
+import {
+  bundledPiCliPath,
+  createLatestSessionDisplayStarter,
+  createSessionDisplayManager,
+  type SessionDisplayManager,
+} from "./fork/session-display";
 import type { SessionDisplayAction, SessionDisplayDockState } from "../shared/session-display";
 import { isTrustedDesktopIpcSender } from "./ipc-trust";
 import type {
@@ -230,6 +235,21 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
       appendMainLog(`[windows-terminal-host] ${message}`);
     },
   });
+  const startSelectedSessionDisplay = createLatestSessionDisplayStarter({
+    resolveNodeExecutable,
+    program: bundledPiCliPath,
+    start: (session) => sessionDisplayManager.start(session),
+    onError(selected, error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sessionDisplayManager.kill(selected.sessionId);
+      emitSessionDisplayError({
+        code: "HOST_UNAVAILABLE",
+        sessionId: selected.sessionId,
+        message: `Pi display failed to start: ${message}`,
+      });
+      appendMainLog(`session display start failed session=${selected.sessionId}: ${message}`);
+    },
+  });
 
   trustedOn("desktop:start-session-display", (_event, payload: unknown) => {
     if (!payload || typeof payload !== "object") return;
@@ -246,29 +266,14 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
     for (const win of trustedWindows()) {
       if (win && !win.isDestroyed()) win.webContents.send("desktop:cockpit-selection", selected);
     }
-    void resolveNodeExecutable(selected.cwd)
-      .then((nodeExecutable) => {
-        sessionDisplayManager.start({
-          ...selected,
-          nodeExecutable,
-          program: bundledPiCliPath(),
-        });
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        sessionDisplayManager.kill(selected.sessionId);
-        emitSessionDisplayError({
-          code: "HOST_UNAVAILABLE",
-          sessionId: selected.sessionId,
-          message: `Pi display failed to start: ${message}`,
-        });
-        appendMainLog(`session display start failed session=${selected.sessionId}: ${message}`);
-      });
+    void startSelectedSessionDisplay.start(selected);
   });
 
   trustedOn("desktop:kill-session-display", (_event, sessionId: unknown) => {
     if (typeof sessionId !== "string" || !sessionId.trim()) return;
-    sessionDisplayManager.kill(sessionId.trim());
+    const normalizedSessionId = sessionId.trim();
+    startSelectedSessionDisplay.cancel(normalizedSessionId);
+    sessionDisplayManager.kill(normalizedSessionId);
   });
 
   trustedOn("desktop:write-session-display", (_event, sessionId: unknown, data: unknown) => {

@@ -166,12 +166,6 @@ namespace
 
     void attachSessionHostWindow(HWND window, HWND parentHandle)
     {
-        RECT clientRect{};
-        if (!GetClientRect(parentHandle, &clientRect))
-        {
-            throw std::runtime_error("GetClientRect failed for session parent window");
-        }
-
         const auto currentStyle = GetWindowLongPtrW(window, GWL_STYLE);
         SetWindowLongPtrW(window, GWL_STYLE, (currentStyle & ~static_cast<LONG_PTR>(WS_POPUP)) | WS_CHILD);
         SetLastError(ERROR_SUCCESS);
@@ -180,9 +174,7 @@ namespace
             throw std::runtime_error("failed to attach session host window to parent");
         }
 
-        const auto width = std::max(1L, clientRect.right - clientRect.left);
-        const auto height = std::max(1L, clientRect.bottom - clientRect.top);
-        SetWindowPos(window, nullptr, 0, 0, width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SetWindowPos(window, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW);
     }
 
     DispatcherQueueController createCurrentDispatcherQueueController()
@@ -1422,7 +1414,8 @@ namespace
             {
                 ShowWindow(candidate->host, candidateId == session->id ? SW_SHOW : SW_HIDE);
             }
-            SetWindowPos(session->island, nullptr, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            SetWindowPos(session->host, HWND_TOP, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            SetWindowPos(session->island, nullptr, 0, 0, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
         }
 
         void theme(const winrt::Windows::Data::Json::JsonObject& command)

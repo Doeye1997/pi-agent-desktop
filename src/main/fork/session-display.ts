@@ -24,6 +24,43 @@ export type SessionDisplayStartResult =
 
 export type SessionDisplayManager = ReturnType<typeof createSessionDisplayManager>;
 
+type SessionDisplaySelection = Pick<SessionDisplaySession, "sessionId" | "sessionPath" | "cwd">;
+
+export function createLatestSessionDisplayStarter(options: {
+  resolveNodeExecutable: (cwd: string) => Promise<string>;
+  program: () => string;
+  start: (session: SessionDisplaySession) => void;
+  onError: (selection: SessionDisplaySelection, error: unknown) => void;
+}) {
+  let latestSelection = 0;
+  let pendingSessionId: string | null = null;
+  return {
+    async start(selection: SessionDisplaySelection): Promise<void> {
+      const selectionNumber = ++latestSelection;
+      pendingSessionId = selection.sessionId;
+      try {
+        const nodeExecutable = await options.resolveNodeExecutable(selection.cwd);
+        if (selectionNumber !== latestSelection) return;
+        pendingSessionId = null;
+        options.start({
+          ...selection,
+          nodeExecutable,
+          program: options.program(),
+        });
+      } catch (error) {
+        if (selectionNumber !== latestSelection) return;
+        pendingSessionId = null;
+        options.onError(selection, error);
+      }
+    },
+    cancel(sessionId: string): void {
+      if (pendingSessionId !== sessionId) return;
+      latestSelection += 1;
+      pendingSessionId = null;
+    },
+  };
+}
+
 export function bundledPiCliPath(): string {
   const packageJsonPath = findPackageJSON(
     "@earendil-works/pi-coding-agent",
@@ -80,6 +117,7 @@ export function createSessionDisplayManager(options: {
 }) {
   const sessions = new Map<string, SessionDisplaySession>();
   const marks = new Map<string, SessionDisplayMark>();
+  const pendingBounds = new Map<string, SessionDisplayBounds>();
   let host: SessionDisplayHost | null = null;
 
   const reportMark = (sessionId: string, mark: SessionDisplayMark): void => {
@@ -176,6 +214,8 @@ export function createSessionDisplayManager(options: {
       ensureHost().mount(mount);
       sessions.set(request.sessionId, request);
       reportMark(request.sessionId, "running");
+      const bounds = pendingBounds.get(request.sessionId);
+      if (bounds) setBounds(request.sessionId, bounds);
       return { action: "spawn", sessionId: request.sessionId };
     } catch (error) {
       return failStart(request.sessionId, error);
@@ -203,7 +243,6 @@ export function createSessionDisplayManager(options: {
 
   function setBounds(sessionId: string, bounds: SessionDisplayBounds): void {
     if (
-      !sessions.has(sessionId) ||
       !Number.isFinite(bounds.x) ||
       !Number.isFinite(bounds.y) ||
       !Number.isFinite(bounds.width) ||
@@ -215,6 +254,8 @@ export function createSessionDisplayManager(options: {
     ) {
       return;
     }
+    pendingBounds.set(sessionId, bounds);
+    if (!sessions.has(sessionId)) return;
     try {
       host?.setBounds(sessionId, bounds);
     } catch (error) {
@@ -250,6 +291,7 @@ export function createSessionDisplayManager(options: {
 
   function kill(sessionId: string): void {
     sessions.delete(sessionId);
+    pendingBounds.delete(sessionId);
     reportMark(sessionId, "dead");
     try {
       host?.kill(sessionId);
@@ -261,6 +303,7 @@ export function createSessionDisplayManager(options: {
   function dispose(): void {
     const liveSessionIds = [...sessions.keys()];
     sessions.clear();
+    pendingBounds.clear();
     for (const sessionId of liveSessionIds) marks.set(sessionId, "dead");
     try {
       host?.dispose();
