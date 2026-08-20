@@ -16,6 +16,8 @@ Commands:
 - `resize`: `{ sessionId, size: { cols, rows } }`
 - `bounds`: `{ sessionId, bounds: { x, y, width, height, scaleFactor } }`
 - `theme`: `{ theme: "light" | "dark" }`
+- `dock`: `{ sessionId, state: { cwdLabel, worktreeLabel, usageLabel, modelLabel, thinkingLabel, mcpLabel, cwdChoices, worktreeChoices, modelChoices, thinkingChoices, skillChoices } }`
+- `hide`: `{ sessionId }` (keeps the background session alive)
 - `dead`: `{ sessionId }`
 - `kill`: `{ sessionId }`
 - `dispose`
@@ -23,6 +25,7 @@ Commands:
 Events:
 
 - `{ type: "mark", sessionId, mark: "running" | "dead" }`
+- `{ type: "action", sessionId, action: "relocate" | "browse-cwd" | "model" | "thinking", value? }`
 - `{ type: "error", sessionId?, code, message }`
 - `{ type: "host-error", code, message }`
 

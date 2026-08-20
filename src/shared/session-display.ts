@@ -2,6 +2,34 @@ export type SessionDisplayMark = "running" | "dead";
 
 export type SessionDisplayTheme = "light" | "dark";
 
+export type SessionDisplayChoice = {
+  label: string;
+  value: string;
+};
+
+export type SessionDisplayDockState = {
+  cwdLabel: string;
+  worktreeLabel: string;
+  usageLabel: string;
+  modelLabel: string;
+  thinkingLabel: string;
+  mcpLabel: string;
+  cwdChoices: SessionDisplayChoice[];
+  worktreeChoices: SessionDisplayChoice[];
+  modelChoices: SessionDisplayChoice[];
+  thinkingChoices: SessionDisplayChoice[];
+  skillChoices: SessionDisplayChoice[];
+};
+
+export type SessionDisplayActionName = "relocate" | "browse-cwd" | "model" | "thinking";
+
+export type SessionDisplayAction = {
+  type: "action";
+  sessionId: string;
+  action: SessionDisplayActionName;
+  value?: string;
+};
+
 export type SessionDisplaySize = {
   cols: number;
   rows: number;
@@ -34,6 +62,7 @@ export type SessionDisplayError = {
 
 export type SessionDisplayHostEvent =
   | { type: "mark"; sessionId: string; mark: SessionDisplayMark }
+  | SessionDisplayAction
   | {
       type: "error";
       sessionId?: string;

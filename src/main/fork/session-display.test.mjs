@@ -25,6 +25,12 @@ function createFakeHost() {
     setTheme(theme) {
       calls.push(["theme", theme]);
     },
+    setDockState(sessionId, state) {
+      calls.push(["dock", sessionId, state]);
+    },
+    hide(sessionId) {
+      calls.push(["hide", sessionId]);
+    },
     dead(sessionId) {
       calls.push(["dead", sessionId]);
     },
@@ -86,6 +92,57 @@ test("session display forwards composer, resize, native bounds, and theme operat
     ["bounds", "sess-1", { x: 4, y: 8, width: 640, height: 480, scaleFactor: 1.25 }],
     ["theme", "light"],
   ]);
+});
+
+test("session display forwards dock state and returns native picker actions", () => {
+  const host = createFakeHost();
+  const actions = [];
+  let emit;
+  const manager = createSessionDisplayManager({
+    createHost: (onEvent) => {
+      emit = onEvent;
+      return host;
+    },
+    getParentWindowHandle: () => "hwnd:cockpit",
+    onAction: (action) => actions.push(action),
+  });
+  manager.start(request());
+
+  const state = {
+    cwdLabel: "project-one",
+    worktreeLabel: "main",
+    usageLabel: "Context 12k",
+    modelLabel: "Sonnet",
+    thinkingLabel: "High",
+    mcpLabel: "MCP",
+    cwdChoices: [{ label: "project-two", value: "F:/project-two" }],
+    worktreeChoices: [],
+    modelChoices: [],
+    thinkingChoices: [],
+    skillChoices: [],
+  };
+  manager.setDockState("sess-1", state);
+  emit({ type: "action", sessionId: "sess-1", action: "relocate", value: "F:/project-two" });
+
+  assert.deepEqual(host.calls.at(-1), ["dock", "sess-1", state]);
+  assert.deepEqual(actions, [
+    { type: "action", sessionId: "sess-1", action: "relocate", value: "F:/project-two" },
+  ]);
+});
+
+test("session display hides a deselected native child without killing its background session", () => {
+  const host = createFakeHost();
+  const manager = createSessionDisplayManager({
+    createHost: () => host,
+    getParentWindowHandle: () => "hwnd:cockpit",
+  });
+  manager.start(request());
+
+  manager.hide("sess-1");
+
+  assert.deepEqual(host.calls.at(-1), ["hide", "sess-1"]);
+  assert.equal(manager.snapshotMarks()["sess-1"], "running");
+  assert.equal(host.calls.some(([type]) => type === "kill"), false);
 });
 
 test("composer seam forwards one complete Unicode line with CR", () => {

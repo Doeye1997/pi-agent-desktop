@@ -42,6 +42,8 @@ test("all desktop IPC registrations pass through the trusted wrappers", () => {
   assert.match(source, /trustedOn\("desktop:resize-session-display"/);
   assert.match(source, /trustedOn\("desktop:set-session-display-bounds"/);
   assert.match(source, /trustedOn\("desktop:set-session-display-theme"/);
+  assert.match(source, /trustedOn\("desktop:set-session-display-dock-state"/);
+  assert.match(source, /trustedOn\("desktop:hide-session-display"/);
   assert.match(source, /trustedHandle\("desktop:get-session-display-marks"/);
   assert.doesNotMatch(source, /trustedHandle\("desktop:abort-session"/);
   assert.doesNotMatch(source, /trustedHandle\("desktop:start-session-display"/);

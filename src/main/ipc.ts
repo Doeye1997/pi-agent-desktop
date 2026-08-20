@@ -24,6 +24,7 @@ import { ToolchainError } from "../shared/toolchains/errors";
 import type { BrowserService } from "./browser/browser-service";
 import { BrowserError } from "./browser/browser-error";
 import { bundledPiCliPath, createSessionDisplayManager, type SessionDisplayManager } from "./fork/session-display";
+import type { SessionDisplayAction, SessionDisplayDockState } from "../shared/session-display";
 import { isTrustedDesktopIpcSender } from "./ipc-trust";
 import type {
   BrowserConfirmationKind,
@@ -200,6 +201,11 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
       }
     }
   };
+  const emitSessionDisplayAction = (action: SessionDisplayAction): void => {
+    for (const win of trustedWindows()) {
+      if (win && !win.isDestroyed()) win.webContents.send("desktop:session-display-action", action);
+    }
+  };
   const getParentWindowHandle = (): string | null => {
     const win = getMainWindow();
     if (!win || win.isDestroyed()) return null;
@@ -216,6 +222,9 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
       appendMainLog(`session display error session=${error.sessionId ?? "none"} code=${error.code}: ${error.message}`);
       emitSessionDisplayError(error);
       emitSessionDisplayMarks();
+    },
+    onAction(action) {
+      emitSessionDisplayAction(action);
     },
     onDiagnostic(message) {
       appendMainLog(`[windows-terminal-host] ${message}`);
@@ -293,6 +302,18 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
 
   trustedOn("desktop:set-session-display-theme", (_event, theme: unknown) => {
     if (theme === "light" || theme === "dark") sessionDisplayManager.setTheme(theme);
+  });
+
+  trustedOn("desktop:set-session-display-dock-state", (_event, payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const sessionId = "sessionId" in payload ? payload.sessionId : undefined;
+    const state = "state" in payload ? payload.state : undefined;
+    if (typeof sessionId !== "string" || !sessionId.trim() || !state || typeof state !== "object") return;
+    sessionDisplayManager.setDockState(sessionId.trim(), state as SessionDisplayDockState);
+  });
+
+  trustedOn("desktop:hide-session-display", (_event, sessionId: string) => {
+    if (typeof sessionId === "string" && sessionId.trim()) sessionDisplayManager.hide(sessionId.trim());
   });
 
   trustedHandle("desktop:get-session-display-marks", () => sessionDisplayManager.snapshotMarks());

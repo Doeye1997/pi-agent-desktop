@@ -1,0 +1,74 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { buildSessionDisplayDockState, inputForSessionDisplayAction } from "./session-display-dock.ts";
+
+test("dock state projects session facts and picker choices without reading terminal cells", () => {
+  const state = buildSessionDisplayDockState({
+    session: {
+      id: "sess-1",
+      path: "F:/sessions/one.jsonl",
+      cwd: "F:/repo-worktrees/feature",
+      projectRoot: "F:/repo",
+      worktreeBranch: "feature/native-dock",
+    },
+    sessions: [
+      { id: "sess-1", cwd: "F:/repo-worktrees/feature" },
+      { id: "sess-2", cwd: "F:/other" },
+    ],
+    worktrees: [
+      { path: "F:/repo", branch: "main", isMain: true },
+      { path: "F:/repo-worktrees/feature", branch: "feature/native-dock", isMain: false },
+    ],
+    models: {
+      models: [
+        { id: "sonnet", name: "Claude Sonnet", provider: "anthropic" },
+        { id: "gpt", name: "GPT", provider: "openai" },
+      ],
+      thinkingLevels: { "anthropic:sonnet": ["off", "medium", "high"] },
+    },
+    context: {
+      model: { provider: "anthropic", modelId: "sonnet" },
+      thinkingLevel: "high",
+      messages: [
+        {
+          role: "assistant",
+          usage: { input: 3000, output: 400, cacheRead: 100, cacheWrite: 0 },
+        },
+      ],
+    },
+    skills: [{ name: "review", description: "Review current changes" }],
+    statuses: [{ key: "mcp", text: "MCP: 2 connected" }],
+  });
+
+  assert.equal(state.cwdLabel, "feature");
+  assert.equal(state.worktreeLabel, "feature/native-dock");
+  assert.equal(state.usageLabel, "Context 3.5k");
+  assert.equal(state.modelLabel, "Claude Sonnet");
+  assert.equal(state.thinkingLabel, "High");
+  assert.equal(state.mcpLabel, "MCP: 2 connected");
+  assert.deepEqual(state.cwdChoices, [
+    { label: "feature", value: "F:/repo-worktrees/feature" },
+    { label: "other", value: "F:/other" },
+  ]);
+  assert.deepEqual(state.worktreeChoices.map(({ label }) => label), ["main", "feature/native-dock"]);
+  assert.deepEqual(state.thinkingChoices.map(({ value }) => value), ["off", "medium", "high"]);
+  assert.deepEqual(state.skillChoices, [{ label: "/review — Review current changes", value: "/review" }]);
+});
+
+test("dock actions use Pi commands and key input on the existing TermControl connection", () => {
+  assert.equal(
+    inputForSessionDisplayAction(
+      { type: "action", sessionId: "sess-1", action: "model", value: "anthropic/sonnet" },
+      { currentThinking: "medium", thinkingLevels: ["off", "medium", "high"] },
+    ),
+    "/model anthropic/sonnet\r\r",
+  );
+  assert.equal(
+    inputForSessionDisplayAction(
+      { type: "action", sessionId: "sess-1", action: "thinking", value: "off" },
+      { currentThinking: "medium", thinkingLevels: ["off", "medium", "high"] },
+    ),
+    "\u001b[Z\u001b[Z",
+  );
+});

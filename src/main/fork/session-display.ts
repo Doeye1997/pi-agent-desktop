@@ -1,5 +1,7 @@
 import type {
   SessionDisplayBounds,
+  SessionDisplayAction,
+  SessionDisplayDockState,
   SessionDisplayError,
   SessionDisplayHostEvent,
   SessionDisplayMark,
@@ -72,6 +74,7 @@ export function createSessionDisplayManager(options: {
   createHost?: (onEvent: (event: SessionDisplayHostEvent) => void) => SessionDisplayHost;
   getParentWindowHandle: () => string | null;
   onMark?: (sessionId: string, mark: SessionDisplayMark) => void;
+  onAction?: (action: SessionDisplayAction) => void;
   onError?: (error: SessionDisplayError) => void;
   onDiagnostic?: (message: string) => void;
 }) {
@@ -90,6 +93,10 @@ export function createSessionDisplayManager(options: {
   };
 
   const onHostEvent = (event: SessionDisplayHostEvent): void => {
+    if (event.type === "action") {
+      if (sessions.has(event.sessionId)) options.onAction?.(event);
+      return;
+    }
     if (event.type === "mark") {
       reportMark(event.sessionId, event.mark);
       if (event.mark === "dead" && sessions.has(event.sessionId)) {
@@ -223,6 +230,24 @@ export function createSessionDisplayManager(options: {
     }
   }
 
+  function setDockState(sessionId: string, state: SessionDisplayDockState): void {
+    if (!sessions.has(sessionId)) return;
+    try {
+      host?.setDockState(sessionId, state);
+    } catch (error) {
+      reportError(toDisplayError(error, sessionId));
+    }
+  }
+
+  function hide(sessionId: string): void {
+    if (!sessions.has(sessionId)) return;
+    try {
+      host?.hide(sessionId);
+    } catch (error) {
+      reportError(toDisplayError(error, sessionId));
+    }
+  }
+
   function kill(sessionId: string): void {
     sessions.delete(sessionId);
     reportMark(sessionId, "dead");
@@ -249,5 +274,5 @@ export function createSessionDisplayManager(options: {
     return Object.fromEntries(marks);
   }
 
-  return { start, write, resize, setBounds, setTheme, kill, dispose, snapshotMarks };
+  return { start, write, resize, setBounds, setTheme, setDockState, hide, kill, dispose, snapshotMarks };
 }

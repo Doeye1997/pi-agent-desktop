@@ -1,6 +1,8 @@
 import type { ChannelId } from "../shared/channel-types";
 import type {
   SessionDisplayBounds,
+  SessionDisplayAction,
+  SessionDisplayDockState,
   SessionDisplayError,
   SessionDisplayMark,
   SessionDisplayTheme,
@@ -145,9 +147,12 @@ export interface PiBridge {
   resizeSessionDisplay: (sessionId: string, cols: number, rows: number) => void;
   setSessionDisplayBounds: (sessionId: string, bounds: SessionDisplayBounds) => void;
   setSessionDisplayTheme: (theme: SessionDisplayTheme) => void;
+  setSessionDisplayDockState: (sessionId: string, state: SessionDisplayDockState) => void;
+  hideSessionDisplay: (sessionId: string) => void;
   getSessionDisplayMarks: () => Promise<Record<string, SessionDisplayMark>>;
   onSessionDisplayMarks: (cb: (marks: Record<string, SessionDisplayMark>) => void) => () => void;
   onSessionDisplayError: (cb: (error: SessionDisplayError) => void) => () => void;
+  onSessionDisplayAction: (cb: (action: SessionDisplayAction) => void) => () => void;
   onCockpitSelection: (cb: (session: { sessionId: string; sessionPath?: string; cwd: string }) => void) => () => void;
   openExternal: (url: string) => Promise<void>;
   showItemInFolder: (fsPath: string) => Promise<void>;

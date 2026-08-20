@@ -8,6 +8,7 @@ test("session display uses one native surface hole for the selected Pi session",
   assert.match(source, /data-session-display-hole/);
   assert.match(source, /session\.id/);
   assert.match(source, /setSessionDisplayBounds/);
+  assert.match(source, /hideSessionDisplay/);
   assert.match(source, /setSessionDisplayTheme/);
   assert.match(source, /new ResizeObserver/);
   assert.doesNotMatch(source, /@xterm/);

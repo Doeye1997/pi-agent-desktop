@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cwctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -64,9 +65,17 @@ using winrt::Windows::UI::Xaml::Thickness;
 using winrt::Windows::UI::Xaml::VerticalAlignment;
 using winrt::Windows::UI::Xaml::Visibility;
 using winrt::Windows::UI::Xaml::Controls::Border;
+using winrt::Windows::UI::Xaml::Controls::ComboBox;
+using winrt::Windows::UI::Xaml::Controls::ComboBoxItem;
 using winrt::Windows::UI::Xaml::Controls::Grid;
+using winrt::Windows::UI::Xaml::Controls::MenuFlyout;
+using winrt::Windows::UI::Xaml::Controls::MenuFlyoutItem;
+using winrt::Windows::UI::Xaml::Controls::Orientation;
+using winrt::Windows::UI::Xaml::Controls::SelectionChangedEventArgs;
+using winrt::Windows::UI::Xaml::Controls::StackPanel;
 using winrt::Windows::UI::Xaml::Controls::TextBox;
 using winrt::Windows::UI::Xaml::Controls::TextBlock;
+using winrt::Windows::UI::Xaml::Controls::TextChangedEventArgs;
 using winrt::Windows::UI::Xaml::Input::KeyRoutedEventArgs;
 using winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs;
 using winrt::Windows::UI::Xaml::Media::SolidColorBrush;
@@ -79,6 +88,7 @@ using winrt::Microsoft::Terminal::Control::ITermControlFactory;
 using winrt::Microsoft::Terminal::Control::CopyFormat;
 using winrt::Microsoft::Terminal::Control::IKeyBindings;
 using winrt::Microsoft::Terminal::Control::KeyChord;
+using winrt::Microsoft::Terminal::Control::OpenHyperlinkEventArgs;
 using winrt::Microsoft::Terminal::Control::PasteFromClipboardEventArgs;
 using winrt::Microsoft::Terminal::Control::TermControl;
 using winrt::Microsoft::Terminal::Control::WriteToClipboardEventArgs;
@@ -306,6 +316,17 @@ namespace
     void emitMark(const std::string& sessionId, const char* mark)
     {
         emit("{\"type\":\"mark\",\"sessionId\":\"" + jsonEscape(sessionId) + "\",\"mark\":\"" + mark + "\"}");
+    }
+
+    void emitAction(const std::string& sessionId, const char* action, const std::string& value = {})
+    {
+        auto message = "{\"type\":\"action\",\"sessionId\":\"" + jsonEscape(sessionId) +
+                       "\",\"action\":\"" + action + "\"";
+        if (!value.empty())
+        {
+            message += ",\"value\":\"" + jsonEscape(value) + "\"";
+        }
+        emit(message + "}");
     }
 
     class RuntimeModule
@@ -546,10 +567,16 @@ namespace
         std::wstring commandLine = quoteWindowsArgument(utf8ToWide(request.nodeExecutable));
         commandLine += L" ";
         commandLine += quoteWindowsArgument(utf8ToWide(request.program));
+        commandLine += L" --tui-mode fullscreen";
         if (!request.sessionPath.empty())
         {
             commandLine += L" --session ";
             commandLine += quoteWindowsArgument(utf8ToWide(request.sessionPath));
+        }
+        else
+        {
+            commandLine += L" --session-id ";
+            commandLine += quoteWindowsArgument(utf8ToWide(request.sessionId));
         }
         return commandLine;
     }
@@ -660,6 +687,17 @@ namespace
         TermControl _control{ nullptr };
     };
 
+    struct DockControls
+    {
+        Border capsule{ nullptr };
+        ComboBox cwd{ nullptr };
+        ComboBox worktree{ nullptr };
+        TextBlock usage{ nullptr };
+        ComboBox model{ nullptr };
+        ComboBox thinking{ nullptr };
+        TextBlock mcp{ nullptr };
+    };
+
     class Session
     {
     public:
@@ -674,7 +712,8 @@ namespace
                 Border deadLayer,
                 TextBlock deadMessage,
                 Border card,
-                TextBox input) :
+                TextBox input,
+                DockControls dock) :
             request(std::move(sessionRequest)),
             id(request.sessionId),
             xamlSource(std::move(source)),
@@ -687,7 +726,8 @@ namespace
             deadSurface(std::move(deadLayer)),
             deadText(std::move(deadMessage)),
             composerCard(std::move(card)),
-            composer(std::move(input))
+            composer(std::move(input)),
+            dockControls(std::move(dock))
         {
         }
 
@@ -703,6 +743,26 @@ namespace
                 {
                     composer.KeyUp(composerKeyUp);
                 }
+                if (composer && composerTextChanged.value)
+                {
+                    composer.TextChanged(composerTextChanged);
+                }
+                if (dockControls.cwd && cwdSelectionChanged.value)
+                {
+                    dockControls.cwd.SelectionChanged(cwdSelectionChanged);
+                }
+                if (dockControls.worktree && worktreeSelectionChanged.value)
+                {
+                    dockControls.worktree.SelectionChanged(worktreeSelectionChanged);
+                }
+                if (dockControls.model && modelSelectionChanged.value)
+                {
+                    dockControls.model.SelectionChanged(modelSelectionChanged);
+                }
+                if (dockControls.thinking && thinkingSelectionChanged.value)
+                {
+                    dockControls.thinking.SelectionChanged(thinkingSelectionChanged);
+                }
                 if (termControl && termPointerPressed.value)
                 {
                     termControl.PointerPressed(termPointerPressed);
@@ -714,6 +774,10 @@ namespace
                 if (termControl && pasteFromClipboard.value)
                 {
                     termControl.PasteFromClipboard(pasteFromClipboard);
+                }
+                if (termControl && openHyperlink.value)
+                {
+                    termControl.OpenHyperlink(openHyperlink);
                 }
                 if (termControl)
                 {
@@ -825,6 +889,108 @@ namespace
                 });
             keyBindings = winrt::make_self<HostKeyBindings>(termControl);
             termControl.KeyBindings(keyBindings.as<IKeyBindings>());
+            openHyperlink = termControl.OpenHyperlink(
+                [](const winrt::Windows::Foundation::IInspectable&, const OpenHyperlinkEventArgs& args) {
+                    const auto uri = args.Uri();
+                    std::wstring normalized(uri.c_str());
+                    std::transform(normalized.begin(), normalized.end(), normalized.begin(), ::towlower);
+                    if (normalized.starts_with(L"https://") || normalized.starts_with(L"http://") ||
+                        normalized.starts_with(L"mailto:"))
+                    {
+                        ShellExecuteW(nullptr, L"open", uri.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    }
+                });
+        }
+
+        void installDockHandlers()
+        {
+            const auto bindChoice = [this](const ComboBox& combo, winrt::event_token& token, const char* action) {
+                token = combo.SelectionChanged(
+                    [this, action](const winrt::Windows::Foundation::IInspectable& sender, const SelectionChangedEventArgs&) {
+                        if (updatingDock)
+                        {
+                            return;
+                        }
+                        const auto comboBox = sender.as<ComboBox>();
+                        const auto item = comboBox.SelectedItem().try_as<ComboBoxItem>();
+                        if (!item)
+                        {
+                            return;
+                        }
+                        const auto value = winrt::unbox_value_or<winrt::hstring>(item.Tag(), {});
+                        if (value.empty())
+                        {
+                            return;
+                        }
+                        const auto valueUtf8 = wideToUtf8(value.c_str());
+                        if (valueUtf8 == "__browse__")
+                        {
+                            emitAction(id, "browse-cwd");
+                            return;
+                        }
+                        emitAction(id, action, valueUtf8);
+                    });
+            };
+            bindChoice(dockControls.cwd, cwdSelectionChanged, "relocate");
+            bindChoice(dockControls.worktree, worktreeSelectionChanged, "relocate");
+            bindChoice(dockControls.model, modelSelectionChanged, "model");
+            bindChoice(dockControls.thinking, thinkingSelectionChanged, "thinking");
+            composerTextChanged = composer.TextChanged(
+                [this](const winrt::Windows::Foundation::IInspectable& sender, const TextChangedEventArgs&) {
+                    const auto input = sender.as<TextBox>();
+                    if (input.Text() != L"/" || skillChoices.empty())
+                    {
+                        return;
+                    }
+                    auto flyout = MenuFlyout{};
+                    const auto count = std::min<size_t>(skillChoices.size(), 30);
+                    for (size_t index = 0; index < count; ++index)
+                    {
+                        const auto& [label, value] = skillChoices[index];
+                        auto item = MenuFlyoutItem{};
+                        item.Text(winrt::hstring(utf8ToWide(label)));
+                        item.Click([input, value](const auto&, const auto&) {
+                            input.Text(winrt::hstring(utf8ToWide(value + " ")));
+                            input.Focus(FocusState::Programmatic);
+                            input.Select(input.Text().size(), 0);
+                        });
+                        flyout.Items().Append(item);
+                    }
+                    flyout.ShowAt(input);
+                });
+        }
+
+        void applyDockState(const winrt::Windows::Data::Json::JsonObject& state)
+        {
+            updatingDock = true;
+            setChoiceItems(dockControls.cwd, namedString(state, L"cwdLabel", false), state, L"cwdChoices", true);
+            setChoiceItems(
+                dockControls.worktree,
+                namedString(state, L"worktreeLabel", false),
+                state,
+                L"worktreeChoices",
+                false);
+            setChoiceItems(dockControls.model, namedString(state, L"modelLabel", false), state, L"modelChoices", false);
+            setChoiceItems(
+                dockControls.thinking,
+                namedString(state, L"thinkingLabel", false),
+                state,
+                L"thinkingChoices",
+                false);
+            dockControls.usage.Text(winrt::hstring(utf8ToWide(namedString(state, L"usageLabel", false))));
+            dockControls.mcp.Text(winrt::hstring(utf8ToWide(namedString(state, L"mcpLabel", false))));
+            skillChoices.clear();
+            if (state.HasKey(L"skillChoices"))
+            {
+                for (const auto& value : state.GetNamedArray(L"skillChoices"))
+                {
+                    const auto item = value.GetObject();
+                    skillChoices.emplace_back(
+                        namedString(item, L"label", false),
+                        namedString(item, L"value", false));
+                }
+            }
+            updatingDock = false;
         }
 
         void applyTheme(bool dark)
@@ -843,6 +1009,10 @@ namespace
             composer.Background(SolidColorBrush(inputBackground));
             composer.BorderBrush(SolidColorBrush(border));
             composer.Foreground(SolidColorBrush(foreground));
+            dockControls.capsule.Background(SolidColorBrush(inputBackground));
+            dockControls.capsule.BorderBrush(SolidColorBrush(border));
+            dockControls.usage.Foreground(SolidColorBrush(foreground));
+            dockControls.mcp.Foreground(SolidColorBrush(foreground));
             deadSurface.Background(SolidColorBrush(background));
             deadText.Foreground(SolidColorBrush(foreground));
         }
@@ -851,6 +1021,42 @@ namespace
         {
             deadSurface.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
         }
+
+    private:
+        static void setChoiceItems(
+            const ComboBox& combo,
+            const std::string& currentLabel,
+            const winrt::Windows::Data::Json::JsonObject& state,
+            std::wstring_view choicesKey,
+            bool addBrowse)
+        {
+            combo.Items().Clear();
+            auto current = ComboBoxItem{};
+            current.Content(winrt::box_value(winrt::hstring(utf8ToWide(currentLabel))));
+            current.Tag(winrt::box_value(winrt::hstring{}));
+            combo.Items().Append(current);
+            if (state.HasKey(choicesKey))
+            {
+                for (const auto& value : state.GetNamedArray(choicesKey))
+                {
+                    const auto choice = value.GetObject();
+                    auto item = ComboBoxItem{};
+                    item.Content(winrt::box_value(winrt::hstring(utf8ToWide(namedString(choice, L"label", false)))));
+                    item.Tag(winrt::box_value(winrt::hstring(utf8ToWide(namedString(choice, L"value", false)))));
+                    combo.Items().Append(item);
+                }
+            }
+            if (addBrowse)
+            {
+                auto browse = ComboBoxItem{};
+                browse.Content(winrt::box_value(winrt::hstring(L"Browse…")));
+                browse.Tag(winrt::box_value(winrt::hstring(L"__browse__")));
+                combo.Items().Append(browse);
+            }
+            combo.SelectedIndex(0);
+        }
+
+    public:
 
         SessionRequest request;
         std::string id;
@@ -865,14 +1071,23 @@ namespace
         TextBlock deadText{ nullptr };
         Border composerCard{ nullptr };
         TextBox composer{ nullptr };
+        DockControls dockControls;
         winrt::event_token stateChanged{};
         winrt::event_token restartRequested{};
         winrt::event_token composerKeyDown{};
         winrt::event_token composerKeyUp{};
+        winrt::event_token composerTextChanged{};
+        winrt::event_token cwdSelectionChanged{};
+        winrt::event_token worktreeSelectionChanged{};
+        winrt::event_token modelSelectionChanged{};
+        winrt::event_token thinkingSelectionChanged{};
         winrt::event_token termPointerPressed{};
         winrt::event_token writeToClipboard{};
         winrt::event_token pasteFromClipboard{};
+        winrt::event_token openHyperlink{};
         winrt::com_ptr<HostKeyBindings> keyBindings;
+        std::vector<std::pair<std::string, std::string>> skillChoices;
+        bool updatingDock = false;
         std::atomic_bool processWatchStarted = false;
     };
 
@@ -945,6 +1160,10 @@ namespace
                 " sessionPath=" + request.sessionPath +
                 " cwd=" + request.cwd);
             kill(request.sessionId);
+            for (const auto& [existingId, existing] : _sessions)
+            {
+                ShowWindow(existing->host, SW_HIDE);
+            }
 
             const auto hostWindow = createSessionHostWindow();
             auto source = DesktopWindowXamlSource{};
@@ -979,6 +1198,7 @@ namespace
             settingsImpl->SessionId(newGuid());
             settingsImpl->FontFace(winrt::hstring(L"Cascadia Mono"));
             settingsImpl->FontSize(12.0f);
+            settingsImpl->DetectURLs(true);
 
             const auto connection = createConnection(request, settingsImpl->SessionId());
 
@@ -1028,7 +1248,57 @@ namespace
             composer.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(winrt::hstring(L"Cascadia Mono")));
             composer.FontSize(14.0);
             composer.Padding(Thickness{ 12.0, 0.0, 12.0, 0.0 });
-            composerCard.Child(composer);
+
+            const auto createDockCombo = [](double width) {
+                auto combo = ComboBox{};
+                combo.Width(width);
+                combo.Height(32.0);
+                combo.MaxDropDownHeight(420.0);
+                combo.FontSize(12.0);
+                return combo;
+            };
+            auto cwdCombo = createDockCombo(140.0);
+            cwdCombo.PlaceholderText(winrt::hstring(L"Folder"));
+            auto worktreeCombo = createDockCombo(130.0);
+            worktreeCombo.PlaceholderText(winrt::hstring(L"Worktree"));
+            auto modelCombo = createDockCombo(150.0);
+            modelCombo.PlaceholderText(winrt::hstring(L"Model"));
+            auto thinkingCombo = createDockCombo(100.0);
+            thinkingCombo.PlaceholderText(winrt::hstring(L"Thinking"));
+            auto usageText = TextBlock{};
+            usageText.Text(winrt::hstring(L"Usage —"));
+            usageText.VerticalAlignment(VerticalAlignment::Center);
+            usageText.Margin(Thickness{ 8.0, 0.0, 8.0, 0.0 });
+            usageText.FontSize(12.0);
+            auto mcpText = TextBlock{};
+            mcpText.Text(winrt::hstring(L"MCP"));
+            mcpText.VerticalAlignment(VerticalAlignment::Center);
+            mcpText.Margin(Thickness{ 8.0, 0.0, 8.0, 0.0 });
+            mcpText.FontSize(12.0);
+
+            auto dockRow = StackPanel{};
+            dockRow.Orientation(Orientation::Horizontal);
+            dockRow.Spacing(6.0);
+            dockRow.Children().Append(cwdCombo);
+            dockRow.Children().Append(worktreeCombo);
+            dockRow.Children().Append(usageText);
+            dockRow.Children().Append(modelCombo);
+            dockRow.Children().Append(thinkingCombo);
+            dockRow.Children().Append(mcpText);
+
+            auto dockCapsule = Border{};
+            dockCapsule.HorizontalAlignment(HorizontalAlignment::Stretch);
+            dockCapsule.Padding(Thickness{ 6.0, 4.0, 6.0, 4.0 });
+            dockCapsule.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 9.0, 9.0, 9.0, 9.0 });
+            dockCapsule.BorderThickness(Thickness{ 1.0, 1.0, 1.0, 1.0 });
+            dockCapsule.Child(dockRow);
+
+            auto composerStack = StackPanel{};
+            composerStack.Orientation(Orientation::Vertical);
+            composerStack.Spacing(8.0);
+            composerStack.Children().Append(composer);
+            composerStack.Children().Append(dockCapsule);
+            composerCard.Child(composerStack);
             root.Children().Append(composerCard);
 
             try
@@ -1062,10 +1332,19 @@ namespace
                 deadSurface,
                 deadText,
                 composerCard,
-                composer);
+                composer,
+                DockControls{
+                    dockCapsule,
+                    cwdCombo,
+                    worktreeCombo,
+                    usageText,
+                    modelCombo,
+                    thinkingCombo,
+                    mcpText });
             session->applyTheme(_darkTheme);
             session->installComposerHandlers();
             session->installClipboardHandlers();
+            session->installDockHandlers();
             watchConnection(session);
             session->restartRequested = control.RestartTerminalRequested([this, sessionId = request.sessionId](const auto&, const auto&) {
                 try
@@ -1091,8 +1370,13 @@ namespace
             {
                 return;
             }
+            for (const auto& [candidateId, candidate] : _sessions)
+            {
+                ShowWindow(candidate->host, candidateId == sessionId ? SW_SHOW : SW_HIDE);
+            }
             SetFocus(session->island);
-            BringWindowToTop(session->island);
+            session->termControl.Focus(FocusState::Programmatic);
+            BringWindowToTop(session->host);
         }
 
         void write(const std::string& sessionId, const std::string& data)
@@ -1134,6 +1418,10 @@ namespace
             {
                 return;
             }
+            for (const auto& [candidateId, candidate] : _sessions)
+            {
+                ShowWindow(candidate->host, candidateId == session->id ? SW_SHOW : SW_HIDE);
+            }
             SetWindowPos(session->island, nullptr, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
         }
 
@@ -1149,6 +1437,24 @@ namespace
                 const auto settings = session->settingsImpl.as<IControlSettings>();
                 session->termControl.UpdateControlSettings(settings, settings);
                 session->applyTheme(dark);
+            }
+        }
+
+        void dock(const winrt::Windows::Data::Json::JsonObject& command)
+        {
+            const auto session = find(namedString(command, L"sessionId"));
+            if (session)
+            {
+                session->applyDockState(command.GetNamedObject(L"state"));
+            }
+        }
+
+        void hide(const std::string& sessionId)
+        {
+            const auto session = find(sessionId);
+            if (session)
+            {
+                ShowWindow(session->host, SW_HIDE);
             }
         }
 
@@ -1186,13 +1492,16 @@ namespace
         {
             const auto connectionFactory = _connectionModule.factory(connectionClassName);
             const auto connectionStatics = connectionFactory.as<IConptyConnectionStatics>();
+            const auto environment = winrt::single_threaded_map<winrt::hstring, winrt::hstring>();
+            environment.Insert(L"TERM", L"xterm-256color");
+            environment.Insert(L"COLORTERM", L"truecolor");
             const auto connectionSettings = connectionStatics.CreateSettings(
                 winrt::hstring(commandLineFor(request)),
                 winrt::hstring(utf8ToWide(request.cwd)),
                 winrt::hstring(L"Pi"),
                 false,
                 winrt::hstring(L""),
-                nullptr,
+                environment.GetView(),
                 static_cast<uint32_t>(request.rows),
                 static_cast<uint32_t>(request.cols),
                 winrt::guid{},
@@ -1386,6 +1695,14 @@ namespace
                 else if (type == L"theme")
                 {
                     host.theme(command);
+                }
+                else if (type == L"dock")
+                {
+                    host.dock(command);
+                }
+                else if (type == L"hide")
+                {
+                    host.hide(namedString(command, L"sessionId"));
                 }
                 else if (type == L"dead")
                 {

@@ -9,6 +9,8 @@ import type { DesktopMenuEvent, DesktopUpdateState, HostStatus, PiBridge } from 
 import type { BrowserEvent } from "../contract/browser";
 import type {
   SessionDisplayBounds,
+  SessionDisplayAction,
+  SessionDisplayDockState,
   SessionDisplayError,
   SessionDisplayMark,
   SessionDisplayTheme,
@@ -102,6 +104,16 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
     setSessionDisplayTheme: (theme: SessionDisplayTheme) => {
       if (theme === "light" || theme === "dark") ipcRenderer.send("desktop:set-session-display-theme", theme);
     },
+    setSessionDisplayDockState: (sessionId, state: SessionDisplayDockState) => {
+      if (typeof sessionId === "string" && sessionId.trim() && state && typeof state === "object") {
+        ipcRenderer.send("desktop:set-session-display-dock-state", { sessionId: sessionId.trim(), state });
+      }
+    },
+    hideSessionDisplay: (sessionId) => {
+      if (typeof sessionId === "string" && sessionId.trim()) {
+        ipcRenderer.send("desktop:hide-session-display", sessionId.trim());
+      }
+    },
     getSessionDisplayMarks: () => ipcRenderer.invoke("desktop:get-session-display-marks"),
     onSessionDisplayMarks: (cb) => {
       const handler = (_: Electron.IpcRendererEvent, marks: Record<string, SessionDisplayMark>) => cb(marks);
@@ -112,6 +124,11 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
       const handler = (_: Electron.IpcRendererEvent, error: SessionDisplayError) => cb(error);
       ipcRenderer.on("desktop:session-display-error", handler);
       return () => ipcRenderer.removeListener("desktop:session-display-error", handler);
+    },
+    onSessionDisplayAction: (cb) => {
+      const handler = (_: Electron.IpcRendererEvent, action: SessionDisplayAction) => cb(action);
+      ipcRenderer.on("desktop:session-display-action", handler);
+      return () => ipcRenderer.removeListener("desktop:session-display-action", handler);
     },
     onCockpitSelection: (cb) => {
       const handler = (

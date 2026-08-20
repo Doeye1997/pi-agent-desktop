@@ -1577,7 +1577,11 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
             {role === "cockpit" ? (
               <>
                 <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-                  <EmbeddedPiTerminal session={selectedSession} theme={isDark ? "dark" : "light"} />
+                  <EmbeddedPiTerminal
+                    session={selectedSession}
+                    theme={isDark ? "dark" : "light"}
+                    onRelocated={handleSessionRelocated}
+                  />
                 </div>
               </>
             ) : showChat ? (

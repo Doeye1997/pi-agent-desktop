@@ -4,6 +4,7 @@ import { join, basename } from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import type {
   SessionDisplayBounds,
+  SessionDisplayDockState,
   SessionDisplayHostEvent,
   SessionDisplaySession,
   SessionDisplaySize,
@@ -25,6 +26,8 @@ export type SessionDisplayHost = {
   resize: (sessionId: string, size: SessionDisplaySize) => void;
   setBounds: (sessionId: string, bounds: SessionDisplayBounds) => void;
   setTheme: (theme: SessionDisplayTheme) => void;
+  setDockState: (sessionId: string, state: SessionDisplayDockState) => void;
+  hide: (sessionId: string) => void;
   dead: (sessionId: string) => void;
   kill: (sessionId: string) => void;
   dispose: () => void;
@@ -37,6 +40,8 @@ type HostCommand =
   | { type: "resize"; sessionId: string; size: SessionDisplaySize }
   | { type: "bounds"; sessionId: string; bounds: SessionDisplayBounds }
   | { type: "theme"; theme: SessionDisplayTheme }
+  | { type: "dock"; sessionId: string; state: SessionDisplayDockState }
+  | { type: "hide"; sessionId: string }
   | { type: "dead"; sessionId: string }
   | { type: "kill"; sessionId: string }
   | { type: "dispose" };
@@ -62,6 +67,22 @@ function parseHostEvent(line: string): SessionDisplayHostEvent {
     (value.mark === "running" || value.mark === "dead")
   ) {
     return { type: "mark", sessionId: value.sessionId, mark: value.mark };
+  }
+  if (
+    value.type === "action" &&
+    typeof value.sessionId === "string" &&
+    (value.action === "relocate" ||
+      value.action === "browse-cwd" ||
+      value.action === "model" ||
+      value.action === "thinking") &&
+    (value.value === undefined || typeof value.value === "string")
+  ) {
+    return {
+      type: "action",
+      sessionId: value.sessionId,
+      action: value.action,
+      ...(value.value === undefined ? {} : { value: value.value }),
+    };
   }
   if (
     value.type === "error" &&
@@ -174,6 +195,8 @@ export function createWindowsTerminalHost(options: {
     resize: (sessionId, size) => sendCommand(child, { type: "resize", sessionId, size }),
     setBounds: (sessionId, bounds) => sendCommand(child, { type: "bounds", sessionId, bounds }),
     setTheme: (theme) => sendCommand(child, { type: "theme", theme }),
+    setDockState: (sessionId, state) => sendCommand(child, { type: "dock", sessionId, state }),
+    hide: (sessionId) => sendCommand(child, { type: "hide", sessionId }),
     dead: (sessionId) => sendCommand(child, { type: "dead", sessionId }),
     kill: (sessionId) => sendCommand(child, { type: "kill", sessionId }),
     dispose: () => {
