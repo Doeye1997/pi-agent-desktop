@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BrowserErrorCode, BrowserRecovery } from "../contract/browser.ts";
+import { ElectronMainUnavailableError, sendHostMessageToMain, subscribeMainControlMessages } from "./host-control.ts";
 
 type ParentRpcError = {
   message: string;
@@ -12,7 +13,8 @@ type ParentRpcResult = { type: "host-rpc-result"; id: string; ok: boolean; resul
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
+  timeoutMs: number;
 };
 
 const pending = new Map<string, Pending>();
@@ -38,31 +40,51 @@ export class MainProcessRpcError extends Error {
 }
 
 function installListener(): void {
-  if (installed || !process.parentPort) return;
+  if (installed) return;
   installed = true;
-  process.parentPort.on("message", (event) => {
-    const message = event.data as ParentRpcResult;
+  subscribeMainControlMessages((value) => {
+    const message = value as ParentRpcResult | { type: "main-disconnected" };
+    if (message?.type === "main-disconnected") {
+      for (const [id, request] of pending) {
+        if (request.timer) clearTimeout(request.timer);
+        request.timer = setTimeout(() => {
+          if (!pending.delete(id)) return;
+          request.reject(new ElectronMainUnavailableError(request.timeoutMs));
+        }, request.timeoutMs);
+      }
+      return;
+    }
     if (message?.type !== "host-rpc-result") return;
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
-    clearTimeout(request.timer);
+    if (request.timer) clearTimeout(request.timer);
     if (message.ok) request.resolve(message.result);
     else request.reject(new MainProcessRpcError(message.error ?? { message: "Main process request failed" }));
   });
 }
 
-export function callMain<T>(method: string, params?: unknown, timeoutMs = 10_000): Promise<T> {
+export function callMain<T>(method: string, params?: unknown, timeoutMs = 30_000): Promise<T> {
   installListener();
-  const port = process.parentPort;
-  if (!port) return Promise.reject(new Error("Main process channel is unavailable"));
   const id = randomUUID();
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(`Main process request timed out: ${method}`));
-    }, timeoutMs);
-    pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
-    port.postMessage({ type: "host-rpc", id, method, params });
+    pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timeoutMs });
+    void sendHostMessageToMain({ type: "host-rpc", id, method, params }, timeoutMs).then(
+      () => {
+        const request = pending.get(id);
+        if (!request) return;
+        request.timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Main process request timed out: ${method}`));
+        }, timeoutMs);
+      },
+      (error) => {
+        const request = pending.get(id);
+        if (!request) return;
+        pending.delete(id);
+        if (request.timer) clearTimeout(request.timer);
+        reject(error);
+      },
+    );
   });
 }

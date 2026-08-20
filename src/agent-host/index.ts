@@ -1,135 +1,156 @@
 /**
- * Agent Host — utilityProcess entry.
- * Runs pi-coding-agent in-process; serves Api/Streams over MessagePort.
+ * Standalone Agent Host entry.
+ * Runs pi-coding-agent in-process and accepts reconnectable Electron clients.
  */
 import { createRpcServer } from "../contract/rpc";
-import { installFetchBodyAbort } from "./fetch-abort";
-import { installHttpIdleTimeout } from "./http-idle-timeout";
-import { registerHandlers } from "./handlers";
-import { startSessionWatcher } from "./session-watcher";
-import { toolchainRuntime } from "./toolchain-runtime";
-import type { ToolchainSnapshot } from "../shared/toolchains/types";
-import { installToolchainGitRunner } from "./toolchain-git";
 import type { BrowserCapabilitySnapshot } from "../contract/browser";
+import type { ToolchainSnapshot } from "../shared/toolchains/types";
 import { browserCapabilityRuntime } from "./browser-capability-runtime";
 import { setBashChildListener } from "./desktop-bash-exec";
-import { abortLiveRpcSession, setCockpitRunning, syncBrowserToolsForAllSessions } from "./rpc-manager";
+import { installFetchBodyAbort } from "./fetch-abort";
+import { registerHandlers } from "./handlers";
+import { configureHostControl, postHostMessage, receiveMainControlMessage } from "./host-control";
+import { installHttpIdleTimeout } from "./http-idle-timeout";
+import {
+  abortLiveRpcSession,
+  getRunningSessionIds,
+  setCockpitRunning,
+  subscribeRunningSessions,
+  syncBrowserToolsForAllSessions,
+} from "./rpc-manager";
 import { readPiRuntimeVersion } from "./runtime-version";
+import { startSessionWatcher } from "./session-watcher";
+import { startStandaloneHostServer, type StandaloneHostServer } from "./standalone-host-server";
+import { installToolchainGitRunner } from "./toolchain-git";
+import { toolchainRuntime } from "./toolchain-runtime";
+
+const userDataDirectory = process.env.PI_DESKTOP_USER_DATA;
+if (!userDataDirectory) throw new Error("PI_DESKTOP_USER_DATA is required");
 
 const piRuntimeVersion = readPiRuntimeVersion();
+const hostVersion = process.env.PI_DESKTOP_VERSION?.trim() || "0.0.0";
+const standaloneState: { server?: StandaloneHostServer } = {};
+let resolveStandaloneServer: (server: StandaloneHostServer) => void = () => undefined;
+const standaloneServerReady = new Promise<StandaloneHostServer>((resolve) => {
+  resolveStandaloneServer = resolve;
+});
+
+configureHostControl({
+  broadcast: (message) => standaloneState.server?.broadcastControl(message),
+  sendToMain: async (message, timeoutMs) => {
+    const server = standaloneState.server ?? (await standaloneServerReady);
+    await server.sendControlWhenConnected(message, timeoutMs);
+  },
+});
 
 function log(message: string): void {
-  try {
-    process.parentPort?.postMessage({ type: "log", message });
-  } catch {
-    console.log(`[agent-host] ${message}`);
-  }
+  postHostMessage({ type: "log", message });
+  console.log(`[agent-host] ${message}`);
 }
 
 const httpIdleTimeoutMs = await installHttpIdleTimeout();
 installFetchBodyAbort();
 setBashChildListener((pid, alive) => {
-  try {
-    process.parentPort?.postMessage({ type: "bash-child", pid, alive });
-  } catch {
-    /* parent gone */
-  }
+  postHostMessage({ type: "bash-child", pid, alive });
 });
 log(`HTTP idle timeout ${httpIdleTimeoutMs}ms`);
 
-const server = createRpcServer();
+const rpcServer = createRpcServer();
 const restoreGitRunner = installToolchainGitRunner();
-const stopHandlers = registerHandlers(server);
-const stopWatcher = startSessionWatcher(server);
+const stopHandlers = registerHandlers(rpcServer);
+const stopWatcher = startSessionWatcher(rpcServer);
+let resourcesStopped = false;
 
-// Electron utilityProcess parent messaging
-const parentPort = process.parentPort;
-if (parentPort) {
-  parentPort.on("message", (event) => {
-    const msg = event.data as {
-      type?: string;
-      sessionId?: string;
-      running?: boolean;
-      snapshot?: ToolchainSnapshot | BrowserCapabilitySnapshot;
-    };
-    if (msg?.type === "ping") {
-      parentPort.postMessage({ type: "pong", ts: Date.now() });
-      return;
-    }
-    if (msg?.type === "session-abort") {
-      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
-      if (!sessionId) return;
-      const hit = abortLiveRpcSession(sessionId);
-      log(`session-abort ${sessionId} ${hit ? "delivered" : "no-live-session"}`);
-      return;
-    }
-    if (msg?.type === "cockpit-running") {
-      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
-      if (!sessionId) return;
-      setCockpitRunning(sessionId, msg.running === true);
-      return;
-    }
-    if (msg?.type === "attach-port") {
-      const port = event.ports?.[0];
-      if (port) {
-        try {
-          server.attachPort(port as never);
-          log("renderer port attached");
-        } catch (err) {
-          log(`attach-port failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      } else {
-        log("attach-port: no port in event");
-      }
-      return;
-    }
-    if (msg?.type === "toolchain:init" || msg?.type === "toolchain:changed") {
-      try {
-        if (!msg.snapshot) throw new Error("missing snapshot");
-        toolchainRuntime.apply(msg.snapshot as ToolchainSnapshot);
-        parentPort.postMessage({ type: "toolchain:ack", revision: msg.snapshot.revision });
-        log(`toolchain ${msg.type === "toolchain:init" ? "initialized" : "updated"} revision=${msg.snapshot.revision}`);
-      } catch (error) {
-        log(`toolchain snapshot rejected: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      return;
-    }
-    if (msg?.type === "browser:init" || msg?.type === "browser:changed") {
-      try {
-        if (!msg.snapshot) throw new Error("missing snapshot");
-        browserCapabilityRuntime.apply(msg.snapshot as BrowserCapabilitySnapshot);
-        syncBrowserToolsForAllSessions();
-        parentPort.postMessage({ type: "browser:ack", revision: msg.snapshot.revision });
-        log(`browser ${msg.type === "browser:init" ? "initialized" : "updated"} revision=${msg.snapshot.revision}`);
-      } catch (error) {
-        log(`browser capability snapshot rejected: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      return;
-    }
-    if (msg?.type === "shutdown") {
-      stopWatcher();
-      restoreGitRunner();
-      void stopHandlers().finally(() => process.exit(0));
-    }
-  });
-
-  parentPort.postMessage({ type: "ready", ts: Date.now(), piVersion: piRuntimeVersion });
-  log("agent-host ready");
-} else {
-  // Fallback for non-electron (smoke / unit)
-  console.log("[agent-host] no parentPort — standalone mode");
+async function stopResources(): Promise<void> {
+  if (resourcesStopped) return;
+  resourcesStopped = true;
+  stopWatcher();
+  restoreGitRunner();
+  await stopHandlers();
 }
 
-process.on("uncaughtException", (err) => {
-  log(`uncaughtException: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
-  // Do not keep serving requests from a potentially corrupted Host. The main
-  // process supervisor will restart this utility process within its budget.
-  setImmediate(() => process.exit(1));
-});
-process.on("unhandledRejection", (err) => {
-  log(`unhandledRejection: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
-  setImmediate(() => process.exit(1));
-});
+function handleMainControl(value: unknown): void {
+  const message = value as {
+    type?: string;
+    sessionId?: string;
+    running?: boolean;
+    snapshot?: ToolchainSnapshot | BrowserCapabilitySnapshot;
+  };
+  if (message?.type === "host-rpc-result") {
+    receiveMainControlMessage(message);
+    return;
+  }
+  if (message?.type === "ping") {
+    postHostMessage({ type: "pong", ts: Date.now() });
+    return;
+  }
+  if (message?.type === "session-abort") {
+    const sessionId = typeof message.sessionId === "string" ? message.sessionId.trim() : "";
+    if (!sessionId) return;
+    const hit = abortLiveRpcSession(sessionId);
+    log(`session-abort ${sessionId} ${hit ? "delivered" : "no-live-session"}`);
+    return;
+  }
+  if (message?.type === "cockpit-running") {
+    const sessionId = typeof message.sessionId === "string" ? message.sessionId.trim() : "";
+    if (!sessionId) return;
+    setCockpitRunning(sessionId, message.running === true);
+    return;
+  }
+  if (message?.type === "replace-when-idle") {
+    standaloneState.server?.requestExitWhenIdle();
+    return;
+  }
+  if (message?.type === "toolchain:init" || message?.type === "toolchain:changed") {
+    try {
+      if (!message.snapshot) throw new Error("missing snapshot");
+      const snapshot = message.snapshot as ToolchainSnapshot;
+      toolchainRuntime.apply(snapshot);
+      postHostMessage({ type: "toolchain:ack", revision: snapshot.revision });
+      log(`toolchain ${message.type === "toolchain:init" ? "initialized" : "updated"} revision=${snapshot.revision}`);
+    } catch (error) {
+      log(`toolchain snapshot rejected: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return;
+  }
+  if (message?.type === "browser:init" || message?.type === "browser:changed") {
+    try {
+      if (!message.snapshot) throw new Error("missing snapshot");
+      const snapshot = message.snapshot as BrowserCapabilitySnapshot;
+      browserCapabilityRuntime.apply(snapshot);
+      syncBrowserToolsForAllSessions();
+      postHostMessage({ type: "browser:ack", revision: snapshot.revision });
+      log(`browser ${message.type === "browser:init" ? "initialized" : "updated"} revision=${snapshot.revision}`);
+    } catch (error) {
+      log(`browser capability snapshot rejected: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
 
-// Keep alive
-setInterval(() => {}, 1 << 30);
+const standaloneServer = await startStandaloneHostServer({
+  userDataDirectory,
+  hostVersion,
+  piVersion: piRuntimeVersion,
+  rpcServer,
+  isBusy: () => getRunningSessionIds().length > 0,
+  onControl: handleMainControl,
+  onMainDisconnected: () => receiveMainControlMessage({ type: "main-disconnected" }),
+  onExitRequested: async () => {
+    await stopResources();
+    setImmediate(() => process.exit(0));
+  },
+});
+standaloneState.server = standaloneServer;
+resolveStandaloneServer(standaloneServer);
+subscribeRunningSessions(() => standaloneServer.notifyBusyChanged());
+postHostMessage({ type: "ready", ts: Date.now(), piVersion: piRuntimeVersion });
+log("agent-host ready");
+
+process.on("uncaughtException", (error) => {
+  log(`uncaughtException: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  setImmediate(() => process.exit(1));
+});
+process.on("unhandledRejection", (error) => {
+  log(`unhandledRejection: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  setImmediate(() => process.exit(1));
+});

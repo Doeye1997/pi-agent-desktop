@@ -19,7 +19,6 @@ export function resetRpc(): void {
   connectPromise = null;
 }
 
-const HOST_READY_TIMEOUT_MS = 30_000;
 const PORT_TIMEOUT_MS = 15_000;
 const PING_TIMEOUT_MS = 10_000;
 
@@ -82,19 +81,12 @@ async function waitForHostReady(): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      off();
-      reject(new Error(`Agent Host not ready (status=${status})`));
-    }, HOST_READY_TIMEOUT_MS);
-
     const off = window.piBridge!.onHostStatus((s) => {
       status = s.status;
       if (s.status === "ready") {
-        clearTimeout(timer);
         off();
         resolve();
       } else if (s.status === "crashed") {
-        clearTimeout(timer);
         off();
         reject(new Error(s.detail || "Agent Host crashed"));
       }
@@ -103,11 +95,9 @@ async function waitForHostReady(): Promise<void> {
     // Race: status may flip ready between getHostStatus and subscribe
     void window.piBridge!.getHostStatus().then((s) => {
       if (s === "ready") {
-        clearTimeout(timer);
         off();
         resolve();
       } else if (s === "crashed") {
-        clearTimeout(timer);
         off();
         reject(new Error("Agent Host crashed"));
       }

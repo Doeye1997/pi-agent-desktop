@@ -22,6 +22,7 @@ import { ChannelConfigStore } from "./config-store";
 import { LaneScheduler } from "./lane-scheduler";
 import { CHANNEL_MEDIA_MAX_ATTACHMENTS, ChannelMediaStore } from "./media-store";
 import { callMain } from "../parent-rpc";
+import { postHostMessage } from "../host-control";
 import { PiSessionBridge } from "./pi-session-bridge";
 import { evaluateInboundPolicy, isChannelInboundEnabled } from "./policy";
 import { fingerprintSecret, safeChannelError } from "./redaction";
@@ -194,11 +195,7 @@ export class ChannelManager {
   }
 
   private log(message: string): void {
-    try {
-      process.parentPort?.postMessage({ type: "log", message: `[channels] ${message}` });
-    } catch {
-      /* ignore */
-    }
+    postHostMessage({ type: "log", message: `[channels] ${message}` });
   }
 
   private emitStatus(account: ChannelAccountConfig, patch: Partial<ChannelStatus>): void {

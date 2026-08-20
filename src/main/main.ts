@@ -29,6 +29,7 @@ import { createElectronRuntimeFetch } from "./toolchains/electron-runtime-fetch"
 import { BrowserService } from "./browser/browser-service";
 import { findDesktopDeepLink, parseDesktopDeepLink } from "./deep-link";
 import { restartHostAfterExit } from "./host-install-recovery";
+import { assertHostReadyForUpdate, updateBlockingSessionCount } from "./host-update-policy";
 
 // Must run before app ready
 registerAppProtocol();
@@ -113,7 +114,7 @@ function finishPackagedStartupValidation(error?: string): void {
       // The packaged probe exits immediately after startup. Let the utility
       // process release the packaged resources before Electron shuts down so
       // AppImage extraction mode can reap the temporary application cleanly.
-      await hostManager?.stop();
+      await hostManager?.stop({ exitWhenIdle: true });
     } catch (stopError) {
       appendMainLog(
         `packaged startup host shutdown failed: ${stopError instanceof Error ? stopError.message : String(stopError)}`,
@@ -304,9 +305,10 @@ function startMainProcess(): void {
       isPackaged: app.isPackaged,
       automaticChecksEnabled: forkAllowOfficialUpdater() && ui.automaticUpdateChecks !== false,
       prepareToInstall: async () => {
+        assertHostReadyForUpdate(hostManager?.getStatus());
         isQuitting = true;
         destroyTray();
-        await hostManager?.stop();
+        await hostManager?.stop({ exitWhenIdle: true });
       },
       recoverFromInstallFailure: async () => {
         isQuitting = false;
@@ -451,9 +453,8 @@ function startMainProcess(): void {
         else finishPackagedStartupValidation();
       }
       if (status !== "ready") {
-        runningAgentSessionCount = 0;
         setTrayRunningCount(0, getMainWindow);
-        updateManager?.setRunningSessionCount(0);
+        updateManager?.setRunningSessionCount(updateBlockingSessionCount(status, runningAgentSessionCount));
         browserService?.onHostStopped();
       }
       for (const win of BrowserWindow.getAllWindows()) {

@@ -3,7 +3,64 @@ import test from "node:test";
 
 import { EventEmitter } from "node:events";
 
-import { superviseRestartableProcess, waitForValidJavaScriptBundle, waitForViteReady } from "./dev.mjs";
+import {
+  launchDetachedAgentHost,
+  superviseDetachedAgentHost,
+  superviseRestartableProcess,
+  waitForValidJavaScriptBundle,
+  waitForViteReady,
+} from "./dev.mjs";
+
+test("development launches Agent Host outside the supervised Electron process tree", () => {
+  let spawnCall;
+  let unrefCalls = 0;
+  const child = {
+    once() {},
+    unref() {
+      unrefCalls += 1;
+    },
+  };
+  launchDetachedAgentHost("C:/project", "C:/profile", {
+    nodeExecutable: "node.exe",
+    hostEntry: "C:/project/out/main/agent-host.mjs",
+    hostVersion: "build-42",
+    spawn: (command, args, options) => {
+      spawnCall = { command, args, options };
+      return child;
+    },
+  });
+
+  assert.equal(spawnCall.command, "node.exe");
+  assert.deepEqual(spawnCall.args, ["C:/project/out/main/agent-host.mjs"]);
+  assert.equal(spawnCall.options.detached, true);
+  assert.equal(spawnCall.options.stdio, "ignore");
+  assert.equal(spawnCall.options.env.PI_DESKTOP_USER_DATA, "C:/profile");
+  assert.equal(spawnCall.options.env.PI_DESKTOP_VERSION, "build-42");
+  assert.equal(unrefCalls, 1);
+});
+
+test("development supervisor replaces an idle Host without making it an Electron child", () => {
+  const children = [];
+  const timers = [];
+  const supervisor = superviseDetachedAgentHost({
+    start: () => {
+      const child = new EventEmitter();
+      children.push(child);
+      return child;
+    },
+    setTimer: (callback) => {
+      timers.push(callback);
+      return timers.length;
+    },
+    clearTimer() {},
+  });
+
+  children[0].emit("exit", 0, null);
+  assert.equal(timers.length, 1);
+  timers[0]();
+  assert.equal(children.length, 2);
+  supervisor.dispose();
+});
 
 test("Vite readiness retries failures until an OK health response", async () => {
   let clock = 0;

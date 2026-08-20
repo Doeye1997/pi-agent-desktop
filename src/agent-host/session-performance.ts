@@ -1,3 +1,5 @@
+import { postHostMessage } from "./host-control";
+
 const TRACE_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 let traceSequence = 0;
 
@@ -22,9 +24,5 @@ export function roundSessionMilliseconds(value: number): number {
 export function logSessionPerformance(event: string, fields: Record<string, unknown>): void {
   if (!sessionPerformanceEnabled()) return;
   const message = `[perf:sessions] ${JSON.stringify({ event, ...fields })}`;
-  try {
-    process.parentPort?.postMessage({ type: "log", message });
-  } catch {
-    console.debug(`[agent-host] ${message}`);
-  }
+  postHostMessage({ type: "log", message });
 }

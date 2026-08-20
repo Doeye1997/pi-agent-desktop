@@ -1,22 +1,25 @@
 /**
- * Supervises the Agent Host utilityProcess.
- * Forwards MessagePorts between renderer and Host; restarts on crash.
+ * Connects Electron Main to the standalone Agent Host.
+ * Renderer MessagePorts remain inside Electron and are bridged over the
+ * reconnectable loopback transport.
  */
-import { app, utilityProcess, MessageChannelMain, type UtilityProcess, type MessagePortMain } from "electron";
-import fs from "fs";
-import path from "path";
-import { appendMainLog, appendMainLogs } from "./logger";
-import type { ToolchainSnapshot } from "../shared/toolchains/types";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { app, MessageChannelMain, type MessagePortMain } from "electron";
 import type { BrowserCapabilitySnapshot } from "../contract/browser";
-import { BrowserError } from "./browser/browser-error";
-import { createHostExitSignal, reserveHostRestart, trySpawnHost, type HostExitSignal } from "./host-restart-core";
 import { interruptCommandDescendants, terminatePidTree } from "../agent-host/process-tree";
-import { HostOutputLineBuffer } from "./logger-core";
+import type { ToolchainSnapshot } from "../shared/toolchains/types";
+import { HOST_DISCOVERY_FILE, type WireMessagePort } from "../shared/standalone-host-wire";
+import { BrowserError } from "./browser/browser-error";
+import { appendMainLog } from "./logger";
+import { connectStandaloneHost, readHostDiscovery, type StandaloneHostConnection } from "./standalone-host-client";
 
-const CRASH_WINDOW_MS = 30_000;
-const MAX_RESTARTS = 2;
 const PING_INTERVAL_MS = 15_000;
 const PING_TIMEOUT_MS = 10_000;
+const RECONNECT_DELAY_MS = 500;
+const START_TIMEOUT_MS = 15_000;
 
 export type HostStatus = "starting" | "ready" | "crashed" | "stopped";
 
@@ -30,17 +33,36 @@ export type HostMessage =
   | { type: "browser:ack"; revision: number }
   | { type: string; [key: string]: unknown };
 
+interface RendererBridge {
+  localPort: MessagePortMain;
+  remotePort: WireMessagePort;
+  close(): void;
+}
+
+interface HostManagerOptions {
+  userDataDirectory?: string;
+  hostVersion?: string;
+  executable?: string;
+  environment?: NodeJS.ProcessEnv;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class HostManager {
-  private child: UtilityProcess | null = null;
-  private childExitSignal: HostExitSignal | null = null;
+  private connection: StandaloneHostConnection | null = null;
   private status: HostStatus = "stopped";
-  private restartTimes: number[] = [];
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private lastPong = 0;
-  private onStatusChange: ((s: HostStatus, detail?: string) => void) | null = null;
-  private onHostMessage: ((msg: HostMessage) => void) | null = null;
-  private pendingPorts: MessagePortMain[] = [];
-  private wasReadyBeforeExit = false;
+  private onStatusChange: ((status: HostStatus, detail?: string) => void) | null = null;
+  private onHostMessage: ((message: HostMessage) => void) | null = null;
   private requestHandler: ((method: string, params: unknown) => Promise<unknown>) | null = null;
   private toolchainSnapshot: ToolchainSnapshot | null = null;
   private toolchainAckRevision = -1;
@@ -48,19 +70,41 @@ export class HostManager {
   private browserAckRevision = -1;
   private piVersion: string | null = null;
   private bashChildPids = new Set<number>();
+  private runningSessionIds = new Set<string>();
+  private rendererBridges = new Set<RendererBridge>();
+  private reconnectReason: "connection-recovery" | "crash-recovery" | null = null;
+  private stopped = true;
+  private launchAttempted = false;
+  private readonly userDataDirectory: string;
+  private readonly hostVersion: string;
+  private readonly executable: string;
+  private readonly environment: NodeJS.ProcessEnv;
+  private readonly externallySupervised: boolean;
 
-  constructor(private readonly hostEntry: string) {}
-
-  setStatusListener(cb: (s: HostStatus, detail?: string) => void): void {
-    this.onStatusChange = cb;
+  constructor(
+    private readonly hostEntry: string,
+    options: HostManagerOptions = {},
+  ) {
+    this.userDataDirectory = options.userDataDirectory ?? app.getPath("userData");
+    const developmentBuildIdentity = fs.existsSync(hostEntry)
+      ? String(Math.trunc(fs.statSync(hostEntry).mtimeMs))
+      : "missing";
+    this.hostVersion = options.hostVersion ?? (app.isPackaged ? app.getVersion() : developmentBuildIdentity);
+    this.executable = options.executable ?? process.execPath;
+    this.environment = options.environment ?? process.env;
+    this.externallySupervised = this.environment.PI_DESKTOP_HOST_EXTERNAL_SUPERVISOR === "1";
   }
 
-  setMessageListener(cb: (msg: HostMessage) => void): void {
-    this.onHostMessage = cb;
+  setStatusListener(callback: (status: HostStatus, detail?: string) => void): void {
+    this.onStatusChange = callback;
   }
 
-  setRequestHandler(cb: (method: string, params: unknown) => Promise<unknown>): void {
-    this.requestHandler = cb;
+  setMessageListener(callback: (message: HostMessage) => void): void {
+    this.onHostMessage = callback;
+  }
+
+  setRequestHandler(callback: (method: string, params: unknown) => Promise<unknown>): void {
+    this.requestHandler = callback;
   }
 
   getStatus(): HostStatus {
@@ -73,9 +117,7 @@ export class HostManager {
 
   setToolchainSnapshot(snapshot: ToolchainSnapshot): void {
     this.toolchainSnapshot = structuredClone(snapshot);
-    if (this.child && this.status === "ready") {
-      this.postToolchainSnapshot("toolchain:changed");
-    }
+    if (this.connection && this.status === "ready") this.postToolchainSnapshot("toolchain:changed");
   }
 
   getToolchainAckRevision(): number {
@@ -84,7 +126,7 @@ export class HostManager {
 
   setBrowserCapabilitySnapshot(snapshot: BrowserCapabilitySnapshot): void {
     this.browserCapabilitySnapshot = structuredClone(snapshot);
-    if (this.child && this.status === "ready") this.postBrowserSnapshot("browser:changed");
+    if (this.connection && this.status === "ready") this.postBrowserSnapshot("browser:changed");
   }
 
   getBrowserAckRevision(): number {
@@ -92,118 +134,130 @@ export class HostManager {
   }
 
   start(): void {
-    if (this.child) return;
-    this.spawn();
+    if (!this.stopped) return;
+    this.stopped = false;
+    this.launchAttempted = false;
+    this.setStatus("starting");
+    void this.connectOrLaunch();
   }
 
-  stop(): Promise<void> {
-    const exitPromise = this.childExitSignal?.promise ?? Promise.resolve();
+  async stop(options: { exitWhenIdle?: boolean; timeoutMs?: number } = {}): Promise<void> {
+    this.stopped = true;
     this.clearPing();
-    this.status = "stopped";
-    if (this.child) {
+    this.clearReconnect();
+    const connection = this.connection;
+    let exitError: unknown;
+    if (options.exitWhenIdle && connection) {
+      const timeoutMs = options.timeoutMs ?? 10_000;
       try {
-        this.child.postMessage({ type: "shutdown" });
-      } catch {
-        try {
-          this.child.kill();
-        } catch {
-          /* ignore */
-        }
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error(`Agent Host did not exit while idle within ${timeoutMs}ms`));
+          }, timeoutMs);
+          const unsubscribe = connection.onClose(() => {
+            clearTimeout(timer);
+            unsubscribe();
+            resolve();
+          });
+          connection.sendControl({ type: "replace-when-idle", expectedHostVersion: this.hostVersion });
+        });
+      } catch (error) {
+        exitError = error;
       }
-      const child = this.child;
-      setTimeout(() => {
-        if (this.child !== child) return;
-        try {
-          child.kill();
-        } catch {
-          /* ignore */
-        }
-      }, 1_500).unref();
     }
-    return exitPromise;
+    for (const bridge of this.rendererBridges) bridge.close();
+    this.rendererBridges.clear();
+    connection?.close();
+    this.connection = null;
+    this.bashChildPids.clear();
+    this.runningSessionIds.clear();
+    this.reconnectReason = null;
+    this.setStatus("stopped");
+    if (exitError) throw exitError;
   }
 
-  /** Fire-and-forget abort. Host signal plus main-side Ctrl+C of bash/ssh children. */
   abortSession(sessionId: string): void {
     const bashPids = [...this.bashChildPids];
     for (const pid of bashPids) terminatePidTree(pid);
-    const hostPid = this.child?.pid;
+    const hostPid = this.connection?.pid;
     if (typeof hostPid === "number") {
       interruptCommandDescendants(hostPid, (pids) => {
         appendMainLog(`session-abort killed host-children=${pids.join(",") || "none"}`);
       });
     }
-    if (!this.child) {
+    if (!this.connection) {
       appendMainLog(`session-abort dropped (no host): ${sessionId}`);
       return;
     }
-    try {
-      this.child.postMessage({ type: "session-abort", sessionId });
-      appendMainLog(
-        `session-abort ${sessionId} interrupt host=${hostPid ?? "none"} bash=${bashPids.join(",") || "none"}`,
-      );
-    } catch (error) {
-      appendMainLog(`session-abort post failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    this.connection.sendControl({ type: "session-abort", sessionId });
+    appendMainLog(
+      `session-abort ${sessionId} interrupt host=${hostPid ?? "none"} bash=${bashPids.join(",") || "none"}`,
+    );
   }
 
   setCockpitRunning(sessionId: string, running: boolean): void {
-    if (!this.child) return;
-    try {
-      this.child.postMessage({ type: "cockpit-running", sessionId, running });
-    } catch (error) {
-      appendMainLog(`cockpit-running post failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    this.connection?.sendControl({ type: "cockpit-running", sessionId, running });
   }
 
-  /** Hand a MessagePort to the Host so a renderer can talk to it directly. */
   attachRendererPort(port: MessagePortMain): void {
-    if (!this.child || this.status !== "ready") {
-      this.pendingPorts.push(port);
-      // Still try — host may accept once ready
-      if (this.child) {
-        try {
-          this.child.postMessage({ type: "attach-port" }, [port]);
-          this.pendingPorts = this.pendingPorts.filter((p) => p !== port);
-        } catch {
-          /* keep pending */
-        }
-      }
+    const connection = this.connection;
+    if (!connection || this.status !== "ready") {
+      port.close();
       return;
     }
-    try {
-      this.child.postMessage({ type: "attach-port" }, [port]);
-    } catch (err) {
-      appendMainLog(`attachRendererPort failed: ${err}`);
-    }
+    const remotePort = connection.createChannel();
+    const onLocalMessage = (event: { data: unknown }) => remotePort.postMessage(event.data);
+    const onRemoteMessage = (event: { data: unknown }) => {
+      try {
+        port.postMessage(event.data);
+      } catch {
+        bridge.close();
+      }
+    };
+    let closed = false;
+    const bridge: RendererBridge = {
+      localPort: port,
+      remotePort,
+      close: () => {
+        if (closed) return;
+        closed = true;
+        port.off("message", onLocalMessage);
+        port.off("close", bridge.close);
+        remotePort.removeEventListener("message", onRemoteMessage);
+        remotePort.removeEventListener("close", bridge.close);
+        remotePort.close();
+        port.close();
+        this.rendererBridges.delete(bridge);
+      },
+    };
+    port.on("message", onLocalMessage);
+    port.on("close", bridge.close);
+    remotePort.addEventListener("message", onRemoteMessage);
+    remotePort.addEventListener("close", bridge.close);
+    port.start();
+    remotePort.start();
+    this.rendererBridges.add(bridge);
   }
 
-  /** Create a MessageChannel and return the renderer-side port after Host attach. */
   createRendererChannel(): { port1: MessagePortMain; port2: MessagePortMain } {
     const { port1, port2 } = new MessageChannelMain();
     this.attachRendererPort(port2);
     return { port1, port2 };
   }
 
-  /** Issue a one-shot RPC from the main process to the Host. */
   call<T>(method: string, params?: unknown, timeoutMs = 10_000): Promise<T> {
-    if (this.status !== "ready") {
+    if (this.status !== "ready" || !this.connection) {
       return Promise.reject(new Error("Agent Host is not ready"));
     }
-    const { port1 } = this.createRendererChannel();
-    const id = `main-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
+    const port = this.connection.createChannel();
+    const id = `main-${randomUUID()}`;
     return new Promise<T>((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
-        port1.close();
+        port.removeEventListener("message", onMessage);
+        port.close();
       };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Host RPC timed out: ${method}`));
-      }, timeoutMs);
-
-      port1.on("message", (event) => {
+      const onMessage = (event: { data: unknown }) => {
         const message = event.data as {
           kind?: string;
           id?: string;
@@ -215,230 +269,270 @@ export class HostManager {
         cleanup();
         if (message.ok) resolve(message.result as T);
         else reject(new Error(message.error?.message ?? `Host RPC failed: ${method}`));
-      });
-      port1.start();
-      port1.postMessage({ kind: "request", id, method, params });
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Host RPC timed out: ${method}`));
+      }, timeoutMs);
+      port.addEventListener("message", onMessage);
+      port.start();
+      port.postMessage({ kind: "request", id, method, params });
     });
   }
 
-  private setStatus(s: HostStatus, detail?: string): void {
-    this.status = s;
-    this.onStatusChange?.(s, detail);
+  private setStatus(status: HostStatus, detail?: string): void {
+    this.status = status;
+    this.onStatusChange?.(status, detail);
   }
 
-  private spawn(): void {
-    appendMainLog(`spawning agent-host: ${this.hostEntry}`);
-    // A replacement utility process must acknowledge both policy snapshots
-    // itself; an acknowledgement from the previous Host is not transferable.
+  private async connectOrLaunch(): Promise<void> {
+    if (this.stopped || this.connection) return;
+    const startedAt = Date.now();
+    for (;;) {
+      if (this.stopped || this.connection) return;
+      try {
+        const connection = await connectStandaloneHost(this.userDataDirectory, {
+          clientVersion: this.hostVersion,
+          timeoutMs: 1_000,
+        });
+        this.acceptConnection(connection);
+        return;
+      } catch (error) {
+        const value = error as Error & { code?: string; hostProtocolVersion?: number };
+        if (value.code === "PROTOCOL_MISMATCH") {
+          this.setStatus(
+            "starting",
+            `Agent Host protocol ${value.hostProtocolVersion ?? "unknown"} is finishing active work; waiting to start the new version`,
+          );
+          this.scheduleReconnect();
+          return;
+        }
+        const discovery = readHostDiscovery(this.userDataDirectory);
+        if (discovery && processIsAlive(discovery.pid)) {
+          if (Date.now() - startedAt < START_TIMEOUT_MS) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            continue;
+          }
+          this.setStatus("crashed", `Agent Host did not accept connections: ${value.message}`);
+          this.scheduleReconnect();
+          return;
+        }
+        this.removeStaleDiscovery();
+        if (this.externallySupervised) {
+          if (Date.now() - startedAt < START_TIMEOUT_MS) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            continue;
+          }
+          this.setStatus("starting", "Waiting for the development Agent Host supervisor");
+          this.scheduleReconnect();
+          return;
+        }
+        if (!this.launchAttempted) {
+          this.launchAttempted = true;
+          this.launchHost();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          continue;
+        }
+        if (Date.now() - startedAt < START_TIMEOUT_MS) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          continue;
+        }
+        this.setStatus("crashed", `Agent Host failed to start: ${value.message}`);
+        this.scheduleReconnect();
+        return;
+      }
+    }
+  }
+
+  private launchHost(): void {
+    const environment: Record<string, string> = {};
+    for (const [key, value] of Object.entries(this.environment)) {
+      if (typeof value === "string") environment[key] = value;
+    }
+    environment.ELECTRON_RUN_AS_NODE = "1";
+    environment.PI_AGENT_HOST = "1";
+    environment.PI_DESKTOP_USER_DATA = this.userDataDirectory;
+    environment.PI_DESKTOP_VERSION = this.hostVersion;
+    const child = spawn(this.executable, [this.hostEntry], {
+      detached: true,
+      env: environment,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", (error) => {
+      appendMainLog(`agent-host spawn failed: ${error.message}`);
+    });
+    child.unref();
+    appendMainLog(`standalone agent-host launch requested: ${this.hostEntry}`);
+  }
+
+  private acceptConnection(connection: StandaloneHostConnection): void {
+    if (this.stopped) {
+      connection.close();
+      return;
+    }
+    this.connection = connection;
+    this.launchAttempted = false;
+    this.piVersion = connection.piVersion;
     this.toolchainAckRevision = -1;
     this.browserAckRevision = -1;
-    this.setStatus("starting");
-
-    // utilityProcess.fork rejects undefined env values
-    const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(process.env)) {
-      if (typeof v === "string") env[k] = v;
-    }
-    // Host must NOT run as pure node — it needs parentPort from utilityProcess
-    delete env.ELECTRON_RUN_AS_NODE;
-    env.PI_AGENT_HOST = "1";
-    env.PI_DESKTOP_USER_DATA = app.getPath("userData");
-    env.PI_DESKTOP_VERSION = app.getVersion();
-
-    const spawnResult = trySpawnHost(() =>
-      utilityProcess.fork(this.hostEntry, [], {
-        serviceName: "pi-agent-host",
-        stdio: "pipe",
-        env,
-      }),
-    );
-    if (!spawnResult.ok) {
-      appendMainLog(`agent-host spawn failed: ${spawnResult.error}`);
-      this.scheduleRestart(`Host failed to spawn: ${spawnResult.error}`);
-      return;
-    }
-    const child = spawnResult.child;
-    const exitSignal = createHostExitSignal();
-    const stdoutBuffer = new HostOutputLineBuffer((lines) => appendMainLogs(lines.map((line) => `[host:out] ${line}`)));
-    const stderrBuffer = new HostOutputLineBuffer((lines) => appendMainLogs(lines.map((line) => `[host:err] ${line}`)));
-
-    this.child = child;
-    this.childExitSignal = exitSignal;
     this.lastPong = Date.now();
-
-    child.on("spawn", () => {
-      appendMainLog("agent-host spawned");
-      // Flush any pending ports
-      for (const port of this.pendingPorts.splice(0)) {
-        try {
-          child.postMessage({ type: "attach-port" }, [port]);
-        } catch (err) {
-          appendMainLog(`flush pending port failed: ${err}`);
-        }
-      }
-    });
-
-    child.on("message", (msg: unknown) => {
-      const m = msg as HostMessage;
-      if (m?.type === "ready") {
-        this.piVersion = typeof m.piVersion === "string" ? m.piVersion : null;
-        appendMainLog(`agent-host ready pi=${this.piVersion ?? "unknown"}`);
-        const restarted = this.wasReadyBeforeExit;
-        this.wasReadyBeforeExit = false;
-        this.postToolchainSnapshot("toolchain:init");
-        this.postBrowserSnapshot("browser:init");
-        this.setStatus("ready");
-        this.startPing();
-        if (restarted) {
-          this.onHostMessage?.({ type: "host-restarted", reason: "crash-recovery" });
-        }
-      } else if (m?.type === "pong") {
-        this.lastPong = Date.now();
-      } else if (m?.type === "bash-child") {
-        const pid = Number(m.pid);
-        if (Number.isSafeInteger(pid) && pid > 0) {
-          if (m.alive) this.bashChildPids.add(pid);
-          else this.bashChildPids.delete(pid);
-        }
-      } else if (m?.type === "log") {
-        appendMainLog(`[host] ${m.message}`);
-      } else if (m?.type === "toolchain:ack") {
-        const revision = Number(m.revision);
-        if (Number.isSafeInteger(revision) && revision >= 0) {
-          this.toolchainAckRevision = Math.max(this.toolchainAckRevision, revision);
-          appendMainLog(`agent-host toolchain ack revision=${revision}`);
-        }
-      } else if (m?.type === "browser:ack") {
-        const revision = Number(m.revision);
-        if (Number.isSafeInteger(revision) && revision >= 0) {
-          this.browserAckRevision = Math.max(this.browserAckRevision, revision);
-          appendMainLog(`agent-host browser ack revision=${revision}`);
-        }
-      } else if (m?.type === "host-rpc") {
-        const request = m as HostMessage & { id?: string; method?: string; params?: unknown };
-        const id = String(request.id ?? "");
-        const method = String(request.method ?? "");
-        if (id && method) {
-          void (async () => {
-            try {
-              if (!this.requestHandler) throw new Error("Main request handler is unavailable");
-              const result = await this.requestHandler(method, request.params);
-              try {
-                child.postMessage({ type: "host-rpc-result", id, ok: true, result });
-              } catch {
-                /* child exited while the request was running */
-              }
-            } catch (error) {
-              try {
-                child.postMessage({
-                  type: "host-rpc-result",
-                  id,
-                  ok: false,
-                  error:
-                    error instanceof BrowserError
-                      ? error.toJSON()
-                      : { message: error instanceof Error ? error.message : String(error) },
-                });
-              } catch {
-                /* child exited while the request was running */
-              }
-            }
-          })();
-        }
-      }
-      this.onHostMessage?.(m);
-    });
-
-    child.on("exit", (code) => {
-      appendMainLog(`agent-host exit code=${code}`);
-      this.clearPing();
-      const wasCurrentChild = this.child === child;
-      if (wasCurrentChild) {
-        this.child = null;
-        this.bashChildPids.clear();
-      }
-      exitSignal.resolve();
-      if (this.childExitSignal === exitSignal) this.childExitSignal = null;
-      if (!wasCurrentChild) return;
-      if (this.status === "stopped") return;
-
-      this.wasReadyBeforeExit = this.status === "ready" || this.status === "starting";
-      this.scheduleRestart(`Host exited (code ${code})`);
-    });
-
-    child.stdout?.on("data", (buf: Buffer) => stdoutBuffer.push(buf.toString()));
-    child.stdout?.on("end", () => stdoutBuffer.flush());
-    child.stderr?.on("data", (buf: Buffer) => stderrBuffer.push(buf.toString()));
-    child.stderr?.on("end", () => stderrBuffer.flush());
+    const reconnectReason = this.reconnectReason;
+    this.reconnectReason = null;
+    connection.onControl((message) => this.handleControl(message));
+    connection.onClose(() => this.handleConnectionClosed(connection));
+    this.postToolchainSnapshot("toolchain:init");
+    this.postBrowserSnapshot("browser:init");
+    if (connection.hostVersion !== this.hostVersion) {
+      connection.sendControl({ type: "replace-when-idle", expectedHostVersion: this.hostVersion });
+    }
+    this.setStatus("ready");
+    this.startPing();
+    this.onHostMessage?.({ type: "ready", ts: Date.now(), piVersion: this.piVersion ?? undefined });
+    if (reconnectReason) {
+      this.onHostMessage?.({ type: "host-restarted", reason: reconnectReason });
+    }
+    void this.call<{ count: number; sessionIds: string[] }>("system.runningCount")
+      .then((result) => {
+        this.runningSessionIds = new Set(result.sessionIds);
+        this.onHostMessage?.({ type: "running-sessions", sessionIds: result.sessionIds });
+      })
+      .catch(() => undefined);
   }
 
-  private scheduleRestart(reason: string): void {
-    if (this.status === "stopped") return;
-
-    const reservation = reserveHostRestart(this.restartTimes, Date.now(), CRASH_WINDOW_MS, MAX_RESTARTS);
-    this.restartTimes = reservation.restartTimes;
-    if (reservation.attempt === null) {
-      appendMainLog(`${reason}; restart budget exhausted`);
-      this.setStatus("crashed", `${reason} and restart budget exhausted`);
-      return;
+  private handleConnectionClosed(connection: StandaloneHostConnection): void {
+    if (this.connection !== connection) return;
+    this.connection = null;
+    this.clearPing();
+    this.bashChildPids.clear();
+    for (const bridge of this.rendererBridges) bridge.close();
+    this.rendererBridges.clear();
+    if (this.stopped) return;
+    const interrupted = this.runningSessionIds.size > 0;
+    this.reconnectReason = interrupted ? "crash-recovery" : "connection-recovery";
+    this.runningSessionIds.clear();
+    if (interrupted) {
+      this.setStatus("crashed", "Agent Host exited while work was active; the task was interrupted; reconnecting");
+    } else {
+      this.setStatus("starting", "Agent Host connection closed; reconnecting");
     }
+    this.scheduleReconnect();
+  }
 
-    appendMainLog(`restarting agent-host (attempt ${reservation.attempt}/${MAX_RESTARTS}): ${reason}`);
-    this.setStatus("starting", `${reason}; restarting`);
-    setTimeout(() => {
-      if (this.status === "starting" && !this.child) this.spawn();
-    }, 500).unref();
+  private handleControl(value: unknown): void {
+    const message = value as HostMessage;
+    if (!message || typeof message.type !== "string") return;
+    if (message.type === "pong") {
+      this.lastPong = Date.now();
+    } else if (message.type === "bash-child") {
+      const pid = Number(message.pid);
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        if (message.alive) this.bashChildPids.add(pid);
+        else this.bashChildPids.delete(pid);
+      }
+    } else if (message.type === "log") {
+      appendMainLog(`[host] ${String(message.message ?? "")}`);
+    } else if (message.type === "running-sessions") {
+      const sessionIds = Array.isArray(message.sessionIds)
+        ? message.sessionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+        : [];
+      this.runningSessionIds = new Set(sessionIds);
+    } else if (message.type === "toolchain:ack") {
+      const revision = Number(message.revision);
+      if (Number.isSafeInteger(revision) && revision >= 0) {
+        this.toolchainAckRevision = Math.max(this.toolchainAckRevision, revision);
+      }
+    } else if (message.type === "browser:ack") {
+      const revision = Number(message.revision);
+      if (Number.isSafeInteger(revision) && revision >= 0) {
+        this.browserAckRevision = Math.max(this.browserAckRevision, revision);
+      }
+    } else if (message.type === "host-rpc") {
+      void this.handleHostRequest(message);
+    }
+    this.onHostMessage?.(message);
+  }
+
+  private async handleHostRequest(message: HostMessage): Promise<void> {
+    const connection = this.connection;
+    const request = message as HostMessage & { id?: unknown; method?: unknown; params?: unknown };
+    const id = String(request.id ?? "");
+    const method = String(request.method ?? "");
+    if (!connection || !id || !method) return;
+    try {
+      if (!this.requestHandler) throw new Error("Main request handler is unavailable");
+      const result = await this.requestHandler(method, request.params);
+      connection.sendControl({ type: "host-rpc-result", id, ok: true, result });
+    } catch (error) {
+      connection.sendControl({
+        type: "host-rpc-result",
+        id,
+        ok: false,
+        error:
+          error instanceof BrowserError
+            ? error.toJSON()
+            : { message: error instanceof Error ? error.message : String(error) },
+      });
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.launchAttempted = false;
+      void this.connectOrLaunch();
+    }, RECONNECT_DELAY_MS);
+    this.reconnectTimer.unref();
   }
 
   private startPing(): void {
     this.clearPing();
     this.pingTimer = setInterval(() => {
-      if (!this.child) return;
+      const connection = this.connection;
+      if (!connection) return;
       if (Date.now() - this.lastPong > PING_TIMEOUT_MS + PING_INTERVAL_MS) {
-        appendMainLog("agent-host ping timeout — killing");
-        try {
-          this.child.kill();
-        } catch {
-          /* ignore */
-        }
+        appendMainLog("agent-host ping timeout — reconnecting");
+        connection.close();
         return;
       }
-      try {
-        this.child.postMessage({ type: "ping" });
-      } catch {
-        /* ignore */
-      }
+      connection.sendControl({ type: "ping" });
     }, PING_INTERVAL_MS);
   }
 
   private postToolchainSnapshot(type: "toolchain:init" | "toolchain:changed"): void {
-    if (!this.child || !this.toolchainSnapshot) return;
-    try {
-      this.child.postMessage({ type, snapshot: this.toolchainSnapshot });
-    } catch (error) {
-      appendMainLog(`toolchain snapshot delivery failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    if (!this.connection || !this.toolchainSnapshot) return;
+    this.connection.sendControl({ type, snapshot: this.toolchainSnapshot });
   }
 
   private postBrowserSnapshot(type: "browser:init" | "browser:changed"): void {
-    if (!this.child || !this.browserCapabilitySnapshot) return;
+    if (!this.connection || !this.browserCapabilitySnapshot) return;
+    this.connection.sendControl({ type, snapshot: this.browserCapabilitySnapshot });
+  }
+
+  private removeStaleDiscovery(): void {
+    const discoveryPath = path.join(this.userDataDirectory, HOST_DISCOVERY_FILE);
     try {
-      this.child.postMessage({ type, snapshot: this.browserCapabilitySnapshot });
-    } catch (error) {
-      appendMainLog(`browser snapshot delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+      fs.rmSync(discoveryPath, { force: true });
+    } catch {
+      /* a racing Host may replace the record */
     }
   }
 
   private clearPing(): void {
-    if (this.pingTimer) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
+    if (!this.pingTimer) return;
+    clearInterval(this.pingTimer);
+    this.pingTimer = null;
+  }
+
+  private clearReconnect(): void {
+    if (!this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
 }
 
 export function resolveHostEntry(mainDirectory = __dirname): string {
-  // ESM agent-host (pi packages are import-only)
   return path.join(mainDirectory, "agent-host.mjs");
 }
 
@@ -447,19 +541,10 @@ export function resolvePreloadPath(mainDirectory = __dirname): string {
 }
 
 export function resolveRendererEntry(isDev: boolean, mainDirectory = __dirname): string {
-  // Explicit Vite URL (npm run dev sets this)
-  if (process.env.VITE_DEV_SERVER_URL) {
-    return process.env.VITE_DEV_SERVER_URL;
-  }
-  // Prefer built renderer whenever it exists (works for `npm start` after build)
+  if (process.env.VITE_DEV_SERVER_URL) return process.env.VITE_DEV_SERVER_URL;
   const builtIndex = path.join(mainDirectory, "..", "renderer", "index.html");
-  if (fs.existsSync(builtIndex)) {
-    return "app://bundle/index.html";
-  }
-  // Dev without prior build: expect Vite on 5173
-  if (isDev) {
-    return "http://localhost:5173";
-  }
+  if (fs.existsSync(builtIndex)) return "app://bundle/index.html";
+  if (isDev) return "http://localhost:5173";
   return "app://bundle/index.html";
 }
 

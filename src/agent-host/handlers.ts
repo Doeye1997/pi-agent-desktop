@@ -49,6 +49,7 @@ import {
 } from "../contract/types";
 import type { SessionTreeNode } from "../shared/types";
 import { allowFileRoot, getAllowedFileRoots, isFilePathAllowed } from "./file-access";
+import { postHostMessage } from "./host-control";
 import {
   disposeAllRpcSessions,
   getRpcSession,
@@ -685,11 +686,7 @@ export async function projectModelsList(
 export function initializeChannels(
   manager: Pick<ChannelManager, "initialize">,
   report: (message: string) => void = (message) => {
-    try {
-      process.parentPort?.postMessage({ type: "log", message: `[channels] initialization failed: ${message}` });
-    } catch {
-      /* ignore logging failure */
-    }
+    postHostMessage({ type: "log", message: `[channels] initialization failed: ${message}` });
   },
 ): void {
   void manager.initialize().catch((error) => report(safeChannelError(error)));
@@ -703,7 +700,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
   );
   initializeChannels(channelManager);
 
-  // Running sessions stream + tray badge signal to main via parentPort
+  // Running sessions stream + tray badge signal to connected Electron clients.
   subscribeRunningSessions((ids) => {
     // Both fields remain in the current stream contract for renderer compatibility.
     server.emit("agent.running", "*", {
@@ -711,11 +708,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
       sessionIds: ids,
       runningSessionIds: ids,
     } as never);
-    try {
-      process.parentPort?.postMessage({ type: "running-sessions", sessionIds: ids });
-    } catch {
-      /* ignore */
-    }
+    postHostMessage({ type: "running-sessions", sessionIds: ids });
   });
 
   server.handle({
@@ -2058,15 +2051,11 @@ function ensureSessionEvents(
     server.emit("agent.events", key, event as never);
     // ISSUE-015: only agent_end (not synthetic prompt_done) for system notifications
     if (event.type === "agent_end") {
-      try {
-        process.parentPort?.postMessage({
-          type: "agent-end",
-          sessionId: key,
-          eventType: event.type,
-        });
-      } catch {
-        /* ignore */
-      }
+      postHostMessage({
+        type: "agent-end",
+        sessionId: key,
+        eventType: event.type,
+      });
     }
   });
   eventUnsubsBySession.set(key, unsub);

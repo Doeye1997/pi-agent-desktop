@@ -2,7 +2,7 @@
 /** Dev orchestration: Vite (renderer) + tsup watch (main/preload/host) + Electron. */
 
 import { spawn } from "node:child_process";
-import { unwatchFile, watchFile } from "node:fs";
+import { statSync, unwatchFile, watchFile } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -73,6 +73,73 @@ export function createDevRuntime(projectRoot = root) {
   };
 
   return { children, run, shutdown };
+}
+
+export function launchDetachedAgentHost(projectRoot, userDataDirectory, options = {}) {
+  const nodeExecutable = options.nodeExecutable ?? process.execPath;
+  const hostEntry = options.hostEntry ?? path.join(projectRoot, "out", "main", "agent-host.mjs");
+  const hostVersion = options.hostVersion ?? String(Date.now());
+  const spawnProcess = options.spawn ?? spawn;
+  const child = spawnProcess(nodeExecutable, [hostEntry], {
+    cwd: projectRoot,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    env: {
+      ...process.env,
+      PI_AGENT_HOST: "1",
+      PI_DESKTOP_USER_DATA: userDataDirectory,
+      PI_DESKTOP_VERSION: hostVersion,
+    },
+  });
+  child.once("error", (error) => {
+    console.error(`[dev] Agent Host failed to start: ${error.message}`);
+  });
+  child.unref();
+  return child;
+}
+
+export function superviseDetachedAgentHost(options) {
+  const restartDelayMs = options.restartDelayMs ?? 200;
+  const setTimer = options.setTimer ?? setTimeout;
+  const clearTimer = options.clearTimer ?? clearTimeout;
+  let child;
+  let restartTimer;
+  let disposed = false;
+
+  const scheduleRestart = () => {
+    if (disposed || restartTimer !== undefined) return;
+    restartTimer = setTimer(() => {
+      restartTimer = undefined;
+      start();
+    }, restartDelayMs);
+  };
+
+  const start = () => {
+    if (disposed) return;
+    child = options.start();
+    let settled = false;
+    child.once("error", () => {
+      if (settled || disposed) return;
+      settled = true;
+      scheduleRestart();
+    });
+    child.once("exit", () => {
+      if (settled || disposed) return;
+      settled = true;
+      scheduleRestart();
+    });
+  };
+
+  start();
+  return {
+    dispose() {
+      disposed = true;
+      if (restartTimer !== undefined) clearTimer(restartTimer);
+      restartTimer = undefined;
+      child = undefined;
+    },
+  };
 }
 
 export function superviseRestartableProcess(options) {
@@ -186,7 +253,19 @@ export async function runDev(projectRoot = root) {
       waitForSuccessfulProcess(initialBuild, "initial build"),
     ]);
     const mainBundle = path.join(projectRoot, "out", "main", "main.js");
+    const hostBundle = path.join(projectRoot, "out", "main", "agent-host.mjs");
     const initialBundleMtimeMs = (await stat(mainBundle)).mtimeMs;
+    const userDataDir =
+      process.env.PI_DESKTOP_USER_DATA_DIR ?? path.join(projectRoot, "node_modules", ".cache", "pi-desktop-dev");
+    const nodeExecutable = process.env.npm_node_execpath ?? process.execPath;
+    const hostSupervisor = superviseDetachedAgentHost({
+      start: () =>
+        launchDetachedAgentHost(projectRoot, userDataDir, {
+          nodeExecutable,
+          hostEntry: hostBundle,
+          hostVersion: String(Math.trunc(statSync(hostBundle).mtimeMs)),
+        }),
+    });
     const tsupCli = resolvePackageFile(projectRoot, "tsup", "dist/cli-default.js");
     const viteCli = resolvePackageFile(projectRoot, "vite", "bin/vite.js");
     runtime.run("tsup watch", process.execPath, [
@@ -208,17 +287,15 @@ export async function runDev(projectRoot = root) {
     ]);
 
     console.log("[dev] Vite ready; starting Electron…");
-    const userDataDir =
-      process.env.PI_DESKTOP_USER_DATA_DIR ?? path.join(projectRoot, "node_modules", ".cache", "pi-desktop-dev");
     const electronArgs = ["--disable-gpu", "--in-process-gpu", "--no-sandbox", ".", `--user-data-dir=${userDataDir}`];
     const windowsTerminalStage = path.join(projectRoot, "build", "toolchains", "windows-terminal", "win-x64");
-    const nodeExecutable = process.env.npm_node_execpath ?? process.execPath;
     const electronOptions = {
       fatal: false,
       env: {
         VITE_DEV_SERVER_URL: rendererUrl,
         ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
         PI_DESKTOP_DISABLE_GPU: "1",
+        PI_DESKTOP_HOST_EXTERNAL_SUPERVISOR: "1",
         PI_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
         PATH: [windowsTerminalStage, process.env.PATH].filter(Boolean).join(path.delimiter),
       },
@@ -248,6 +325,7 @@ export async function runDev(projectRoot = root) {
         });
     });
     process.once("exit", () => {
+      hostSupervisor.dispose();
       electron.dispose();
       unwatchFile(mainBundle);
     });
