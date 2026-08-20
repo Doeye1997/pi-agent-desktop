@@ -102,7 +102,6 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
   const [authorizationSettingsSessionId, setAuthorizationSettingsSessionId] = useState<string | null>(null);
   const [browserAuthorization, setBrowserAuthorization] = useState<BrowserAgentAuthorizationRequest | null>(null);
   const [channelSnapshot, setChannelSnapshot] = useState<ChannelsSnapshot>(EMPTY_CHANNELS);
-  const [worktreeSlot, setWorktreeSlot] = useState<HTMLDivElement | null>(null);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
@@ -695,7 +694,6 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
         onSessionRelocated={handleSessionRelocated}
-        worktreeSlot={role === "cockpit" ? worktreeSlot : null}
         selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
       />
@@ -1579,12 +1577,7 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
             {role === "cockpit" ? (
               <>
                 <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-                  <EmbeddedPiTerminal
-                    session={selectedSession}
-                    theme={isDark ? "dark" : "light"}
-                    worktreeAnchorRef={setWorktreeSlot}
-                    onSessionRelocated={handleSessionRelocated}
-                  />
+                  <EmbeddedPiTerminal session={selectedSession} theme={isDark ? "dark" : "light"} />
                 </div>
               </>
             ) : showChat ? (

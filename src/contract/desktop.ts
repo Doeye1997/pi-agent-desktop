@@ -1,4 +1,10 @@
 import type { ChannelId } from "../shared/channel-types";
+import type {
+  SessionDisplayBounds,
+  SessionDisplayError,
+  SessionDisplayMark,
+  SessionDisplayTheme,
+} from "../shared/session-display";
 import type { PublicToolchainState, ToolchainActionRequest } from "../shared/toolchains/types";
 import type {
   BrowserBoundsInput,
@@ -133,13 +139,15 @@ export interface PiBridge {
   performToolchainAction: (request: ToolchainActionRequest) => Promise<PublicToolchainState>;
   requestHostPort: () => void;
   abortSession: (sessionId: string) => void;
-  startSessionTui: (session: { sessionId: string; sessionPath?: string; cwd: string }) => void;
-  killSessionTui: (sessionId: string) => void;
-  writeSessionTui: (sessionId: string, data: string) => void;
-  resizeSessionTui: (sessionId: string, cols: number, rows: number) => void;
-  getSessionTuiMarks: () => Promise<Record<string, "running" | "dead">>;
-  onSessionTuiMarks: (cb: (marks: Record<string, "running" | "dead">) => void) => () => void;
-  onSessionTuiData: (cb: (payload: { sessionId: string; data: string }) => void) => () => void;
+  startSessionDisplay: (session: { sessionId: string; sessionPath?: string; cwd: string }) => void;
+  killSessionDisplay: (sessionId: string) => void;
+  writeSessionDisplay: (sessionId: string, data: string) => void;
+  resizeSessionDisplay: (sessionId: string, cols: number, rows: number) => void;
+  setSessionDisplayBounds: (sessionId: string, bounds: SessionDisplayBounds) => void;
+  setSessionDisplayTheme: (theme: SessionDisplayTheme) => void;
+  getSessionDisplayMarks: () => Promise<Record<string, SessionDisplayMark>>;
+  onSessionDisplayMarks: (cb: (marks: Record<string, SessionDisplayMark>) => void) => () => void;
+  onSessionDisplayError: (cb: (error: SessionDisplayError) => void) => () => void;
   onCockpitSelection: (cb: (session: { sessionId: string; sessionPath?: string; cwd: string }) => void) => () => void;
   openExternal: (url: string) => Promise<void>;
   showItemInFolder: (fsPath: string) => Promise<void>;

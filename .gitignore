@@ -12,3 +12,11 @@ temp/
 .pi/extensions/
 build/toolchains/.core-cache/
 build/toolchains/core/
+build/toolchains/windows-terminal/
+build/toolchains/Microsoft.Toolkit.Win32.UI.XamlApplication.6.1.3/
+build/toolchains/Microsoft.Toolkit.Win32.UI.XamlApplication.6.1.3.nupkg
+build/toolchains/Microsoft.Toolkit.Win32-source/
+build/electron-cache/
+native/wt-xaml-island/*.exe
+native/wt-xaml-island/*.obj
+native/wt-xaml-island/obj/

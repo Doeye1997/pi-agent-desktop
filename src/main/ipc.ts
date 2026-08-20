@@ -23,13 +23,7 @@ import {
 import { ToolchainError } from "../shared/toolchains/errors";
 import type { BrowserService } from "./browser/browser-service";
 import { BrowserError } from "./browser/browser-error";
-import { spawn as spawnPty } from "node-pty";
-import {
-  bundledPiCliPath,
-  createSessionPtyManager,
-  type SessionPtyManager,
-  type SessionPtySpawn,
-} from "./fork/session-pty";
+import { bundledPiCliPath, createSessionDisplayManager, type SessionDisplayManager } from "./fork/session-display";
 import { isTrustedDesktopIpcSender } from "./ipc-trust";
 import type {
   BrowserConfirmationKind,
@@ -71,7 +65,7 @@ export type DesktopIpcOptions = {
   };
 };
 
-export function installDesktopIpc(options: DesktopIpcOptions): SessionPtyManager {
+export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayManager {
   const {
     getHostManager,
     getMainWindow,
@@ -193,34 +187,42 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionPtyManager
     getHostManager()?.abortSession(sessionId.trim());
   });
 
-  const emitSessionTuiMarks = (): void => {
-    const marks = sessionPtyManager.snapshotMarks();
+  const emitSessionDisplayMarks = (): void => {
+    const marks = sessionDisplayManager.snapshotMarks();
     for (const win of trustedWindows()) {
-      if (win && !win.isDestroyed()) win.webContents.send("desktop:session-tui-marks", marks);
+      if (win && !win.isDestroyed()) win.webContents.send("desktop:session-display-marks", marks);
     }
   };
-  const emitSessionTuiData = (sessionId: string, data: string): void => {
+  const emitSessionDisplayError = (error: unknown): void => {
     for (const win of trustedWindows()) {
       if (win && !win.isDestroyed()) {
-        win.webContents.send("desktop:session-tui-data", { sessionId, data });
+        win.webContents.send("desktop:session-display-error", error);
       }
     }
   };
-  const sessionPtyManager = createSessionPtyManager({
-    spawn: spawnPty as SessionPtySpawn,
-    onData(sessionId, data) {
-      emitSessionTuiData(sessionId, data);
+  const getParentWindowHandle = (): string | null => {
+    const win = getMainWindow();
+    if (!win || win.isDestroyed()) return null;
+    const handle = win.getNativeWindowHandle();
+    return handle.length > 0 ? handle.toString("base64") : null;
+  };
+  const sessionDisplayManager = createSessionDisplayManager({
+    getParentWindowHandle,
+    onMark(sessionId, mark) {
+      getHostManager()?.setCockpitRunning(sessionId, mark === "running");
+      emitSessionDisplayMarks();
     },
-    onExit(sessionId, exitCode) {
-      appendMainLog(`embedded Pi exited session=${sessionId} code=${exitCode}`);
-      emitSessionTuiMarks();
+    onError(error) {
+      appendMainLog(`session display error session=${error.sessionId ?? "none"} code=${error.code}: ${error.message}`);
+      emitSessionDisplayError(error);
+      emitSessionDisplayMarks();
     },
-    onRunning(sessionId, running) {
-      getHostManager()?.setCockpitRunning(sessionId, running);
+    onDiagnostic(message) {
+      appendMainLog(`[windows-terminal-host] ${message}`);
     },
   });
 
-  trustedOn("desktop:start-session-tui", (_event, payload: unknown) => {
+  trustedOn("desktop:start-session-display", (_event, payload: unknown) => {
     if (!payload || typeof payload !== "object") return;
     const sessionId = "sessionId" in payload ? payload.sessionId : undefined;
     const sessionPath = "sessionPath" in payload ? payload.sessionPath : undefined;
@@ -237,40 +239,63 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionPtyManager
     }
     void resolveNodeExecutable(selected.cwd)
       .then((nodeExecutable) => {
-        sessionPtyManager.start({
+        sessionDisplayManager.start({
           ...selected,
           nodeExecutable,
           program: bundledPiCliPath(),
         });
-        emitSessionTuiMarks();
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        sessionPtyManager.markDead(selected.sessionId);
-        emitSessionTuiMarks();
-        emitSessionTuiData(selected.sessionId, `\r\nPi failed to start: ${message}\r\n`);
-        appendMainLog(`embedded Pi start failed session=${selected.sessionId}: ${message}`);
+        sessionDisplayManager.kill(selected.sessionId);
+        emitSessionDisplayError({
+          code: "HOST_UNAVAILABLE",
+          sessionId: selected.sessionId,
+          message: `Pi display failed to start: ${message}`,
+        });
+        appendMainLog(`session display start failed session=${selected.sessionId}: ${message}`);
       });
   });
 
-  trustedOn("desktop:kill-session-tui", (_event, sessionId: unknown) => {
+  trustedOn("desktop:kill-session-display", (_event, sessionId: unknown) => {
     if (typeof sessionId !== "string" || !sessionId.trim()) return;
-    sessionPtyManager.kill(sessionId.trim());
-    emitSessionTuiMarks();
+    sessionDisplayManager.kill(sessionId.trim());
   });
 
-  trustedOn("desktop:write-session-tui", (_event, sessionId: unknown, data: unknown) => {
+  trustedOn("desktop:write-session-display", (_event, sessionId: unknown, data: unknown) => {
     if (typeof sessionId !== "string" || !sessionId.trim() || typeof data !== "string") return;
-    sessionPtyManager.write(sessionId.trim(), data);
+    sessionDisplayManager.write(sessionId.trim(), data);
   });
 
-  trustedOn("desktop:resize-session-tui", (_event, sessionId: unknown, cols: unknown, rows: unknown) => {
+  trustedOn("desktop:resize-session-display", (_event, sessionId: unknown, cols: unknown, rows: unknown) => {
     if (typeof sessionId !== "string" || !sessionId.trim()) return;
     if (typeof cols !== "number" || typeof rows !== "number") return;
-    sessionPtyManager.resize(sessionId.trim(), cols, rows);
+    sessionDisplayManager.resize(sessionId.trim(), cols, rows);
   });
 
-  trustedHandle("desktop:get-session-tui-marks", () => sessionPtyManager.snapshotMarks());
+  trustedOn("desktop:set-session-display-bounds", (_event, payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const sessionId = "sessionId" in payload ? payload.sessionId : undefined;
+    const bounds = "bounds" in payload ? payload.bounds : undefined;
+    if (typeof sessionId !== "string" || !bounds || typeof bounds !== "object") return;
+    const { x, y, width, height, scaleFactor } = bounds as Record<string, unknown>;
+    if (
+      typeof x !== "number" ||
+      typeof y !== "number" ||
+      typeof width !== "number" ||
+      typeof height !== "number" ||
+      typeof scaleFactor !== "number"
+    ) {
+      return;
+    }
+    sessionDisplayManager.setBounds(sessionId.trim(), { x, y, width, height, scaleFactor });
+  });
+
+  trustedOn("desktop:set-session-display-theme", (_event, theme: unknown) => {
+    if (theme === "light" || theme === "dark") sessionDisplayManager.setTheme(theme);
+  });
+
+  trustedHandle("desktop:get-session-display-marks", () => sessionDisplayManager.snapshotMarks());
 
   trustedHandle("desktop:open-external", async (_event, url: string) => {
     if (typeof url !== "string") return;
@@ -489,7 +514,7 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionPtyManager
   );
   browserHandler("desktop:browser:choose-upload-files", (browser, tabId: string) => browser.chooseUploadFiles(tabId));
   browserHandler("desktop:browser:reset", (browser) => browser.reset());
-  return sessionPtyManager;
+  return sessionDisplayManager;
 }
 
 function toolchainActionConfirmation(request: ToolchainActionRequest): Electron.MessageBoxOptions | undefined {

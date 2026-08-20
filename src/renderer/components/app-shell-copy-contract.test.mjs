@@ -11,9 +11,13 @@ test("session clipboard rejection is consumed and exposed as local alert feedbac
   assert.match(source, /<div role="alert"/);
 });
 
-test("cockpit shows the current worktree in the terminal composer, not the sidebar header", () => {
-  assert.match(source, /worktreeSlot=\{role === "cockpit" \? worktreeSlot : null\}/);
-  assert.match(source, /worktreeAnchorRef=\{setWorktreeSlot\}/);
+test("cockpit renders the native session display without an HTML worktree overlay", () => {
+  assert.match(
+    source,
+    /<EmbeddedPiTerminal[\s\S]*session=\{selectedSession\}[\s\S]*theme=\{isDark \? "dark" : "light"\}/,
+  );
+  assert.doesNotMatch(source, /worktreeSlot=\{role === "cockpit" \? worktreeSlot : null\}/);
+  assert.doesNotMatch(source, /worktreeAnchorRef=\{setWorktreeSlot\}/);
 });
 
 test("relocating a session restarts the cockpit TUI and refreshes the sidebar", () => {

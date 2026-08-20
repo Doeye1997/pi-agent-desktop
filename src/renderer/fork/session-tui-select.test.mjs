@@ -7,7 +7,7 @@ test("folder + new session starts pi --session in that cwd", () => {
   const calls = [];
   globalThis.window = {
     piBridge: {
-      startSessionTui(session) {
+      startSessionDisplay(session) {
         calls.push(session);
       },
     },
@@ -20,7 +20,7 @@ test("selecting another session publishes the same start/focus path so the right
   const calls = [];
   globalThis.window = {
     piBridge: {
-      startSessionTui(session) {
+      startSessionDisplay(session) {
         calls.push(session);
       },
     },

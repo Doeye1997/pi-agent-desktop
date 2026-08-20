@@ -52,6 +52,9 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    watch: {
+      ignored: ["**/native/**"],
+    },
   },
   build: {
     outDir: path.resolve(__dirname, "out/renderer"),

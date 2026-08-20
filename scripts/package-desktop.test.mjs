@@ -9,14 +9,19 @@ test("pack and release plans use Node JS entries and set signing discovery in th
   const nodeBinary = "C:/Program Files/nodejs/node.exe";
   const pack = createDesktopPackageSteps("--dir", { root: projectRoot, nodeBinary });
   const release = createDesktopPackageSteps("--release", { root: projectRoot, nodeBinary });
+  const packBuilder = pack.find((step) => step.label === "electron-builder");
+  const releaseBuilder = release.find((step) => step.label === "electron-builder");
+
+  assert.ok(packBuilder);
+  assert.ok(releaseBuilder);
 
   for (const step of [...pack, ...release]) assert.equal(step.command, nodeBinary);
-  assert.deepEqual(pack[2].args.slice(-1), ["--dir"]);
-  assert.deepEqual(release[2].args.slice(-2), ["--publish", "never"]);
-  assert.equal(pack[2].env.CSC_IDENTITY_AUTO_DISCOVERY, "false");
-  assert.equal(release[2].env.CSC_IDENTITY_AUTO_DISCOVERY, "false");
-  assert.equal(pack[1].args.includes("--release"), false);
-  assert.equal(release[1].args.includes("--release"), true);
+  assert.deepEqual(packBuilder.args.slice(-1), ["--dir"]);
+  assert.deepEqual(releaseBuilder.args.slice(-2), ["--publish", "never"]);
+  assert.equal(packBuilder.env.CSC_IDENTITY_AUTO_DISCOVERY, "false");
+  assert.equal(releaseBuilder.env.CSC_IDENTITY_AUTO_DISCOVERY, "false");
+  assert.equal(pack.find((step) => step.label === "prepare bundled tools").args.includes("--release"), false);
+  assert.equal(release.find((step) => step.label === "prepare bundled tools").args.includes("--release"), true);
 });
 
 test("packaging rejects unknown modes and diagnoses spawn failures, signals, and missing statuses", () => {

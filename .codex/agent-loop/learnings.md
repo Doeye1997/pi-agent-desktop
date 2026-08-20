@@ -1,5 +1,10 @@
 # Learnings
 
+## 2026-08-19
+
+- **Decision:** The Windows Terminal replacement owns the Pi session display through the native TermControl host. The Electron renderer keeps only a positioned surface hole and sends bounds/theme/input over the session-display bridge.
+- **Do instead:** Keep `wt.exe`, `node-pty`, xterm.js, HTML terminal composition, and silent fallback out of the live path. Missing or exited native host is a visible hard error and a dead session mark.
+
 ## 2026-08-18
 
 - **Trap:** Sidebar spinner used `sessionTuiMarks === "running"`. Cockpit PTY stays alive → every open session spins and never looks done.

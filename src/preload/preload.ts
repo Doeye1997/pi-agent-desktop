@@ -7,6 +7,12 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { DesktopMenuEvent, DesktopUpdateState, HostStatus, PiBridge } from "../contract/desktop";
 import type { BrowserEvent } from "../contract/browser";
+import type {
+  SessionDisplayBounds,
+  SessionDisplayError,
+  SessionDisplayMark,
+  SessionDisplayTheme,
+} from "../shared/session-display";
 import { EarlyEventReplay } from "./early-event-replay";
 import { isTrustedPreloadLocation } from "./preload-location-policy";
 import { isValidDeepLinkSessionMessage, selectTransferredHostPort } from "./preload-message-policy";
@@ -73,31 +79,39 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
         ipcRenderer.send("desktop:abort-session", sessionId.trim());
       }
     },
-    killSessionTui: (sessionId) => {
+    killSessionDisplay: (sessionId) => {
       if (typeof sessionId === "string" && sessionId.trim()) {
-        ipcRenderer.send("desktop:kill-session-tui", sessionId.trim());
+        ipcRenderer.send("desktop:kill-session-display", sessionId.trim());
       }
     },
-    writeSessionTui: (sessionId, data) => {
+    writeSessionDisplay: (sessionId, data) => {
       if (typeof sessionId === "string" && sessionId.trim() && typeof data === "string" && data) {
-        ipcRenderer.send("desktop:write-session-tui", sessionId.trim(), data);
+        ipcRenderer.send("desktop:write-session-display", sessionId.trim(), data);
       }
     },
-    resizeSessionTui: (sessionId, cols, rows) => {
+    resizeSessionDisplay: (sessionId, cols, rows) => {
       if (typeof sessionId === "string" && sessionId.trim() && Number.isFinite(cols) && Number.isFinite(rows)) {
-        ipcRenderer.send("desktop:resize-session-tui", sessionId.trim(), cols, rows);
+        ipcRenderer.send("desktop:resize-session-display", sessionId.trim(), cols, rows);
       }
     },
-    getSessionTuiMarks: () => ipcRenderer.invoke("desktop:get-session-tui-marks"),
-    onSessionTuiMarks: (cb) => {
-      const handler = (_: Electron.IpcRendererEvent, marks: Record<string, "running" | "dead">) => cb(marks);
-      ipcRenderer.on("desktop:session-tui-marks", handler);
-      return () => ipcRenderer.removeListener("desktop:session-tui-marks", handler);
+    setSessionDisplayBounds: (sessionId, bounds: SessionDisplayBounds) => {
+      if (typeof sessionId !== "string" || !sessionId.trim()) return;
+      if (!bounds || !Number.isFinite(bounds.width) || !Number.isFinite(bounds.height)) return;
+      ipcRenderer.send("desktop:set-session-display-bounds", { sessionId: sessionId.trim(), bounds });
     },
-    onSessionTuiData: (cb) => {
-      const handler = (_: Electron.IpcRendererEvent, payload: { sessionId: string; data: string }) => cb(payload);
-      ipcRenderer.on("desktop:session-tui-data", handler);
-      return () => ipcRenderer.removeListener("desktop:session-tui-data", handler);
+    setSessionDisplayTheme: (theme: SessionDisplayTheme) => {
+      if (theme === "light" || theme === "dark") ipcRenderer.send("desktop:set-session-display-theme", theme);
+    },
+    getSessionDisplayMarks: () => ipcRenderer.invoke("desktop:get-session-display-marks"),
+    onSessionDisplayMarks: (cb) => {
+      const handler = (_: Electron.IpcRendererEvent, marks: Record<string, SessionDisplayMark>) => cb(marks);
+      ipcRenderer.on("desktop:session-display-marks", handler);
+      return () => ipcRenderer.removeListener("desktop:session-display-marks", handler);
+    },
+    onSessionDisplayError: (cb) => {
+      const handler = (_: Electron.IpcRendererEvent, error: SessionDisplayError) => cb(error);
+      ipcRenderer.on("desktop:session-display-error", handler);
+      return () => ipcRenderer.removeListener("desktop:session-display-error", handler);
     },
     onCockpitSelection: (cb) => {
       const handler = (
@@ -107,7 +121,7 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
       ipcRenderer.on("desktop:cockpit-selection", handler);
       return () => ipcRenderer.removeListener("desktop:cockpit-selection", handler);
     },
-    startSessionTui: (session) => {
+    startSessionDisplay: (session) => {
       if (
         session &&
         typeof session.sessionId === "string" &&
@@ -115,7 +129,7 @@ if (typeof preloadLocation === "string" && isTrustedPreloadLocation(preloadLocat
         typeof session.cwd === "string" &&
         session.cwd.trim()
       ) {
-        ipcRenderer.send("desktop:start-session-tui", {
+        ipcRenderer.send("desktop:start-session-display", {
           sessionId: session.sessionId.trim(),
           ...(typeof session.sessionPath === "string" && session.sessionPath.trim()
             ? { sessionPath: session.sessionPath.trim() }

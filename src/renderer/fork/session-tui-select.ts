@@ -3,7 +3,7 @@ export function forkOnSelectSession(session: { id?: string; path?: string; cwd?:
   const sessionPath = session.path?.trim();
   const cwd = session.cwd?.trim();
   if (!sessionId || !cwd) return;
-  window.piBridge.startSessionTui?.({ sessionId, ...(sessionPath ? { sessionPath } : {}), cwd });
+  window.piBridge.startSessionDisplay?.({ sessionId, ...(sessionPath ? { sessionPath } : {}), cwd });
 }
 
 export function forkOnNewSession(sessionId: string, cwd: string): void {

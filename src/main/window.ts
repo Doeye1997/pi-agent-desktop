@@ -59,7 +59,7 @@ export function createMainWindow(options: CreateMainWindowOptions): BrowserWindo
     title: options.title ?? "Pi Agent Desktop",
     alwaysOnTop: options.alwaysOnTop ?? false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? DARK_BACKGROUND : LIGHT_BACKGROUND,
-    show: false,
+    show: options.isDev && options.show !== false,
     webPreferences: {
       preload: resolvePreloadPath(options.runtimeMainDirectory),
       contextIsolation: true,
@@ -161,6 +161,11 @@ export function createMainWindow(options: CreateMainWindowOptions): BrowserWindo
   });
 
   win.webContents.on("did-finish-load", () => {
+    if (options.isDev && !win.isVisible()) {
+      win.show();
+      win.focus();
+    }
+    appendMainLog(`window did-finish-load visible=${win.isVisible()} minimized=${win.isMinimized()}`);
     const pendingDeepLink = options.consumePendingDeepLink?.();
     if (pendingDeepLink) win.webContents.send("deep-link:session", pendingDeepLink);
   });

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <maxversiontested Id="10.0.18362.0" />
+      <maxversiontested Id="10.0.22000.0" />
+      <maxversiontested Id="10.0.22621.0" />
+      <maxversiontested Id="10.0.26100.0" />
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+  <asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" name="Microsoft.Toolkit.Win32.UI.XamlHost.dll">
+    <activatableClass
+      xmlns="urn:schemas-microsoft-com:winrt.v1"
+      name="Microsoft.Toolkit.Win32.UI.XamlHost.XamlApplication"
+      threadingModel="both" />
+  </asmv3:file>
+  <asmv3:file xmlns:asmv3="urn:schemas-microsoft-com:asm.v3" name="Microsoft.UI.Xaml.dll">
+    <activatableClass
+      xmlns="urn:schemas-microsoft-com:winrt.v1"
+      name="Microsoft.UI.Xaml.Controls.XamlControlsResources"
+      threadingModel="both" />
+  </asmv3:file>
+</assembly>

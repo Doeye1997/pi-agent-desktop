@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getHome, listSessions, relocateSession, subscribeRunning, validateCwd } from "@/lib/api-client";
 import { useI18n } from "@/i18n";
-import { abbreviateHomePath } from "@/lib/display-path";
-import { folderLabel } from "./tui-dock-rect";
+import { abbreviateHomePath, folderLabel } from "@/lib/display-path";
 import type { SessionInfo } from "@/lib/types";
 
 function recentProjectRoots(sessions: SessionInfo[]): string[] {

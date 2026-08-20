@@ -20,6 +20,11 @@ export function createDesktopPackageSteps(mode, options = {}) {
       args: [path.join(projectRoot, "scripts", "verify.mjs")],
     },
     {
+      label: "prepare Windows Terminal host",
+      command: nodeBinary,
+      args: [path.join(projectRoot, "scripts", "prepare-windows-terminal-host.mjs")],
+    },
+    {
       label: "prepare bundled tools",
       command: nodeBinary,
       args: [

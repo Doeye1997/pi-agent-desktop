@@ -23,3 +23,8 @@ export function abbreviateHomePath(cwd: string, homeDir?: string): string {
   const boundary = cwd.charAt(home.length);
   return boundary === "/" || boundary === "\\" ? `~${cwd.slice(home.length)}` : cwd;
 }
+
+export function folderLabel(cwd: string): string {
+  const parts = cwd.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || cwd;
+}

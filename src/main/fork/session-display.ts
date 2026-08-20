@@ -1,0 +1,246 @@
+import type {
+  SessionDisplayBounds,
+  SessionDisplayError,
+  SessionDisplayHostEvent,
+  SessionDisplayMark,
+  SessionDisplaySession,
+  SessionDisplaySize,
+  SessionDisplayTheme,
+} from "../../shared/session-display";
+import { findPackageJSON } from "node:module";
+import { dirname, join } from "node:path";
+import {
+  createWindowsTerminalHost,
+  type SessionDisplayHost,
+  type SessionDisplayHostMount,
+} from "./windows-terminal-host.ts";
+
+const DEFAULT_SIZE: SessionDisplaySize = { cols: 120, rows: 30 };
+
+export type SessionDisplayStartResult =
+  { action: "spawn" | "focus"; sessionId: string } | { action: "error"; sessionId: string };
+
+export type SessionDisplayManager = ReturnType<typeof createSessionDisplayManager>;
+
+export function bundledPiCliPath(): string {
+  const packageJsonPath = findPackageJSON(
+    "@earendil-works/pi-coding-agent",
+    typeof __filename === "string" ? __filename : import.meta.url,
+  );
+  if (!packageJsonPath) throw new Error("Bundled Pi package not found");
+  return join(dirname(packageJsonPath), "dist", "cli.js");
+}
+
+function validDimension(value: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  const integer = Math.floor(value);
+  return integer > 0 && integer <= 10_000 ? integer : null;
+}
+
+function validSize(size: SessionDisplaySize): SessionDisplaySize | null {
+  const cols = validDimension(size.cols);
+  const rows = validDimension(size.rows);
+  return cols && rows ? { cols, rows } : null;
+}
+
+function samePlacement(live: SessionDisplaySession, request: SessionDisplaySession): boolean {
+  return (
+    live.cwd === request.cwd &&
+    live.sessionId === request.sessionId &&
+    (live.sessionPath ?? "") === (request.sessionPath ?? "") &&
+    live.nodeExecutable === request.nodeExecutable &&
+    live.program === request.program
+  );
+}
+
+function toDisplayError(error: unknown, sessionId?: string): SessionDisplayError {
+  const candidate = error as { code?: unknown; message?: unknown };
+  const code =
+    candidate?.code === "HOST_EXITED" ||
+    candidate?.code === "HOST_PROTOCOL_ERROR" ||
+    candidate?.code === "INVALID_PARENT_WINDOW"
+      ? candidate.code
+      : "HOST_UNAVAILABLE";
+  return {
+    code,
+    ...(sessionId ? { sessionId } : {}),
+    message: typeof candidate?.message === "string" ? candidate.message : String(error),
+  };
+}
+
+export function createSessionDisplayManager(options: {
+  createHost?: (onEvent: (event: SessionDisplayHostEvent) => void) => SessionDisplayHost;
+  getParentWindowHandle: () => string | null;
+  onMark?: (sessionId: string, mark: SessionDisplayMark) => void;
+  onError?: (error: SessionDisplayError) => void;
+  onDiagnostic?: (message: string) => void;
+}) {
+  const sessions = new Map<string, SessionDisplaySession>();
+  const marks = new Map<string, SessionDisplayMark>();
+  let host: SessionDisplayHost | null = null;
+
+  const reportMark = (sessionId: string, mark: SessionDisplayMark): void => {
+    marks.set(sessionId, mark);
+    options.onMark?.(sessionId, mark);
+  };
+
+  const reportError = (error: SessionDisplayError): void => {
+    if (error.sessionId) reportMark(error.sessionId, "dead");
+    options.onError?.(error);
+  };
+
+  const onHostEvent = (event: SessionDisplayHostEvent): void => {
+    if (event.type === "mark") {
+      reportMark(event.sessionId, event.mark);
+      return;
+    }
+    if (event.type === "error") {
+      reportError(event);
+      if (event.sessionId) sessions.delete(event.sessionId);
+      return;
+    }
+    const error = { code: event.code, message: event.message } satisfies SessionDisplayError;
+    const sessionIds = [...sessions.keys()];
+    if (sessionIds.length === 0) reportError(error);
+    for (const sessionId of sessionIds) {
+      reportMark(sessionId, "dead");
+      reportError({ ...error, sessionId });
+    }
+    sessions.clear();
+    host = null;
+  };
+
+  const ensureHost = (): SessionDisplayHost => {
+    if (host) return host;
+    host =
+      options.createHost?.(onHostEvent) ??
+      createWindowsTerminalHost({ onEvent: onHostEvent, onDiagnostic: options.onDiagnostic });
+    return host;
+  };
+
+  const failStart = (sessionId: string, error: unknown): SessionDisplayStartResult => {
+    const displayError = toDisplayError(error, sessionId);
+    reportError(displayError);
+    return { action: "error", sessionId };
+  };
+
+  function start(
+    request: SessionDisplaySession,
+    requestedSize: SessionDisplaySize = DEFAULT_SIZE,
+  ): SessionDisplayStartResult {
+    const size = validSize(requestedSize) ?? DEFAULT_SIZE;
+    const existing = sessions.get(request.sessionId);
+    if (existing && samePlacement(existing, request)) {
+      try {
+        ensureHost().focus(request.sessionId);
+        return { action: "focus", sessionId: request.sessionId };
+      } catch (error) {
+        sessions.delete(request.sessionId);
+        return failStart(request.sessionId, error);
+      }
+    }
+    if (existing) {
+      try {
+        host?.kill(request.sessionId);
+      } catch {
+        // The new mount still gets a chance to report a useful host error.
+      }
+      sessions.delete(request.sessionId);
+      reportMark(request.sessionId, "dead");
+    }
+
+    const parentWindowHandle = options.getParentWindowHandle();
+    if (!parentWindowHandle) {
+      return failStart(request.sessionId, {
+        code: "INVALID_PARENT_WINDOW",
+        message: "Cockpit native window handle is unavailable",
+      });
+    }
+
+    const mount: SessionDisplayHostMount = { session: request, size, parentWindowHandle };
+    try {
+      ensureHost().mount(mount);
+      sessions.set(request.sessionId, request);
+      reportMark(request.sessionId, "running");
+      return { action: "spawn", sessionId: request.sessionId };
+    } catch (error) {
+      return failStart(request.sessionId, error);
+    }
+  }
+
+  function write(sessionId: string, data: string): void {
+    if (!data || data.length > 1_048_576 || !sessions.has(sessionId)) return;
+    try {
+      host?.write(sessionId, data);
+    } catch (error) {
+      reportError(toDisplayError(error, sessionId));
+    }
+  }
+
+  function resize(sessionId: string, cols: number, rows: number): void {
+    const size = validSize({ cols, rows });
+    if (!size || !sessions.has(sessionId)) return;
+    try {
+      host?.resize(sessionId, size);
+    } catch (error) {
+      reportError(toDisplayError(error, sessionId));
+    }
+  }
+
+  function setBounds(sessionId: string, bounds: SessionDisplayBounds): void {
+    if (
+      !sessions.has(sessionId) ||
+      !Number.isFinite(bounds.x) ||
+      !Number.isFinite(bounds.y) ||
+      !Number.isFinite(bounds.width) ||
+      !Number.isFinite(bounds.height) ||
+      !Number.isFinite(bounds.scaleFactor) ||
+      bounds.width <= 0 ||
+      bounds.height <= 0 ||
+      bounds.scaleFactor <= 0
+    ) {
+      return;
+    }
+    try {
+      host?.setBounds(sessionId, bounds);
+    } catch (error) {
+      reportError(toDisplayError(error, sessionId));
+    }
+  }
+
+  function setTheme(theme: SessionDisplayTheme): void {
+    try {
+      host?.setTheme(theme);
+    } catch (error) {
+      reportError(toDisplayError(error));
+    }
+  }
+
+  function kill(sessionId: string): void {
+    sessions.delete(sessionId);
+    reportMark(sessionId, "dead");
+    try {
+      host?.kill(sessionId);
+    } catch (error) {
+      reportError(toDisplayError(error, sessionId));
+    }
+  }
+
+  function dispose(): void {
+    const liveSessionIds = [...sessions.keys()];
+    sessions.clear();
+    for (const sessionId of liveSessionIds) marks.set(sessionId, "dead");
+    try {
+      host?.dispose();
+    } finally {
+      host = null;
+      marks.clear();
+    }
+  }
+
+  function snapshotMarks(): Record<string, SessionDisplayMark> {
+    return Object.fromEntries(marks);
+  }
+
+  return { start, write, resize, setBounds, setTheme, kill, dispose, snapshotMarks };
+}

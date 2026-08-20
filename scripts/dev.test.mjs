@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { EventEmitter } from "node:events";
 
-import { superviseRestartableProcess, waitForViteReady } from "./dev.mjs";
+import { superviseRestartableProcess, waitForValidJavaScriptBundle, waitForViteReady } from "./dev.mjs";
 
 test("Vite readiness retries failures until an OK health response", async () => {
   let clock = 0;
@@ -40,6 +40,51 @@ test("Vite readiness has a total timeout with the last failure", async () => {
     /within 250ms \(last failure: HTTP 503\)/,
   );
   assert.equal(clock, 250);
+});
+
+test("JavaScript bundle readiness retries while tsup is writing", async () => {
+  let clock = 0;
+  let reads = 0;
+  await waitForValidJavaScriptBundle("main.js", {
+    readFile: async () => {
+      reads += 1;
+      return reads === 1 ? "const broken =" : "const ready = true;";
+    },
+    now: () => clock,
+    sleep: async (delay) => {
+      clock += delay;
+    },
+    timeoutMs: 1_000,
+    intervalMs: 100,
+  });
+  assert.equal(reads, 2);
+  assert.equal(clock, 100);
+});
+
+test("JavaScript bundle readiness waits for the watch build", async () => {
+  let clock = 0;
+  let statCalls = 0;
+  let reads = 0;
+  await waitForValidJavaScriptBundle("main.js", {
+    modifiedAfterMs: 100,
+    stat: async () => {
+      statCalls += 1;
+      return { mtimeMs: statCalls === 1 ? 100 : 101 };
+    },
+    readFile: async () => {
+      reads += 1;
+      return "const ready = true;";
+    },
+    now: () => clock,
+    sleep: async (delay) => {
+      clock += delay;
+    },
+    timeoutMs: 1_000,
+    intervalMs: 100,
+  });
+  assert.equal(statCalls, 2);
+  assert.equal(reads, 1);
+  assert.equal(clock, 100);
 });
 
 test("Electron supervisor debounces rebuilds and starts a replacement after exit", () => {

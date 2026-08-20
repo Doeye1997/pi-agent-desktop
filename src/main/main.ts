@@ -18,7 +18,7 @@ import { installDesktopIpc } from "./ipc";
 import { createCredentialRequestHandler, CredentialVault } from "./credential-vault";
 import { createProductionUpdateAdapter, isProductionUpdatePlatformEnabled } from "./update-adapter";
 import { createUpdateManager, redactUpdateError, type UpdateManager } from "./update-manager";
-import type { SessionPtyManager } from "./fork/session-pty";
+import type { SessionDisplayManager } from "./fork/session-display";
 import { forkAllowOfficialUpdater } from "./fork/updates";
 import { ToolchainManager } from "./toolchains/manager";
 import { resolveRuntimeCatalogPath } from "./toolchains/catalog";
@@ -39,12 +39,16 @@ crashReporter.start({
 });
 
 const isDev = !app.isPackaged;
+if (isDev && process.env.PI_DESKTOP_DISABLE_GPU === "1") {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("in-process-gpu");
+}
 const packagedStartupValidation = app.isPackaged && process.argv.includes("--validate-packaged-startup");
 const expectedPiVersion = process.env.PI_DESKTOP_EXPECTED_PI_VERSION;
 const TOOLCHAIN_FOCUS_RESCAN_TTL_MS = 60_000;
 
 let mainWindow: BrowserWindow | null = null;
-let sessionPtyManager: SessionPtyManager | null = null;
+let sessionDisplayManager: SessionDisplayManager | null = null;
 let hostManager: HostManager | null = null;
 let updateManager: UpdateManager | null = null;
 let toolchainManager: ToolchainManager | null = null;
@@ -214,6 +218,7 @@ function startMainProcess(): void {
       },
     });
     mainWindow = win;
+    if (isDev) win.show();
     win.on("hide", () => browserService?.handleWindowVisibility(false));
     win.on("minimize", () => browserService?.handleWindowVisibility(false));
     win.on("show", () => browserService?.handleWindowVisibility(true));
@@ -377,7 +382,7 @@ function startMainProcess(): void {
     // (npm start after build, or dev fallback when VITE_DEV_SERVER_URL is unset).
     handleAppProtocol(rendererRootPath());
 
-    sessionPtyManager = installDesktopIpc({
+    sessionDisplayManager = installDesktopIpc({
       getHostManager: () => hostManager,
       getMainWindow,
       getTrustedWindows,
@@ -392,7 +397,9 @@ function startMainProcess(): void {
       performToolchainAction: (request) => toolchainManager!.performAction(request),
       chooseCustomTool: (capability, executable) => toolchainManager!.registerCustomTool(capability, executable),
       resolveNodeExecutable: async () => {
-        const executable = toolchainManager!.getSnapshot().defaults["js.node"]?.executable;
+        const detectedExecutable = toolchainManager!.getSnapshot().defaults["js.node"]?.executable;
+        const developmentExecutable = isDev ? process.env.PI_DESKTOP_NODE_EXECUTABLE?.trim() : undefined;
+        const executable = detectedExecutable ?? developmentExecutable;
         if (!executable) throw new Error("Node.js is required to open Pi CLI");
         return executable;
       },
@@ -512,7 +519,7 @@ function startMainProcess(): void {
 
   app.on("before-quit", () => {
     isQuitting = true;
-    sessionPtyManager?.killAll();
+    sessionDisplayManager?.dispose();
     updateManager?.stopAutomaticChecks();
     destroyTray();
     void hostManager?.stop();
