@@ -8,9 +8,12 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Text.h>
+#include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
 #include <winrt/Windows.UI.Xaml.Hosting.h>
+#include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Markup.h>
+#include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Microsoft.Toolkit.Win32.UI.XamlHost.h>
 #include <winrt/Microsoft.Terminal.Control.h>
 #include <winrt/Microsoft.Terminal.Core.h>
@@ -28,6 +31,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -51,13 +55,31 @@ using winrt::Windows::Foundation::Collections::IMapView;
 using winrt::Windows::Foundation::Collections::ValueSet;
 using winrt::Windows::System::DispatcherQueue;
 using winrt::Windows::System::DispatcherQueueController;
+using winrt::Windows::System::VirtualKey;
+using winrt::Windows::UI::Color;
+using winrt::Windows::UI::Xaml::ElementTheme;
+using winrt::Windows::UI::Xaml::FocusState;
+using winrt::Windows::UI::Xaml::HorizontalAlignment;
+using winrt::Windows::UI::Xaml::Thickness;
+using winrt::Windows::UI::Xaml::VerticalAlignment;
+using winrt::Windows::UI::Xaml::Controls::Border;
+using winrt::Windows::UI::Xaml::Controls::Grid;
+using winrt::Windows::UI::Xaml::Controls::TextBox;
+using winrt::Windows::UI::Xaml::Input::KeyRoutedEventArgs;
+using winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs;
+using winrt::Windows::UI::Xaml::Media::SolidColorBrush;
 using winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource;
 using winrt::Windows::UI::Xaml::Markup::IXamlMetadataProvider;
 using winrt::Microsoft::Toolkit::Win32::UI::XamlHost::XamlApplication;
 using winrt::Microsoft::Terminal::Control::IControlAppearance;
 using winrt::Microsoft::Terminal::Control::IControlSettings;
 using winrt::Microsoft::Terminal::Control::ITermControlFactory;
+using winrt::Microsoft::Terminal::Control::CopyFormat;
+using winrt::Microsoft::Terminal::Control::IKeyBindings;
+using winrt::Microsoft::Terminal::Control::KeyChord;
+using winrt::Microsoft::Terminal::Control::PasteFromClipboardEventArgs;
 using winrt::Microsoft::Terminal::Control::TermControl;
+using winrt::Microsoft::Terminal::Control::WriteToClipboardEventArgs;
 using winrt::Microsoft::Terminal::Control::XamlMetaDataProvider;
 using winrt::Microsoft::Terminal::TerminalConnection::ConptyConnection;
 using winrt::Microsoft::Terminal::TerminalConnection::IConptyConnectionStatics;
@@ -530,10 +552,125 @@ namespace
         return commandLine;
     }
 
+    bool writeClipboardText(HWND owner, const winrt::hstring& text)
+    {
+        if (!OpenClipboard(owner))
+        {
+            return false;
+        }
+
+        const auto bytes = (text.size() + 1) * sizeof(wchar_t);
+        const auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (!memory)
+        {
+            CloseClipboard();
+            return false;
+        }
+
+        const auto destination = GlobalLock(memory);
+        if (!destination)
+        {
+            GlobalFree(memory);
+            CloseClipboard();
+            return false;
+        }
+
+        std::memcpy(destination, text.c_str(), bytes);
+        GlobalUnlock(memory);
+        EmptyClipboard();
+        if (!SetClipboardData(CF_UNICODETEXT, memory))
+        {
+            GlobalFree(memory);
+            CloseClipboard();
+            return false;
+        }
+
+        CloseClipboard();
+        return true;
+    }
+
+    std::optional<winrt::hstring> readClipboardText(HWND owner)
+    {
+        if (!OpenClipboard(owner))
+        {
+            return std::nullopt;
+        }
+
+        const auto memory = GetClipboardData(CF_UNICODETEXT);
+        if (!memory)
+        {
+            CloseClipboard();
+            return std::nullopt;
+        }
+
+        const auto source = static_cast<const wchar_t*>(GlobalLock(memory));
+        if (!source)
+        {
+            CloseClipboard();
+            return std::nullopt;
+        }
+
+        const auto text = winrt::hstring(source);
+        GlobalUnlock(memory);
+        CloseClipboard();
+        return text;
+    }
+
+    class HostKeyBindings : public winrt::implements<HostKeyBindings, IKeyBindings>
+    {
+    public:
+        explicit HostKeyBindings(TermControl control) : _control(std::move(control))
+        {
+        }
+
+        bool TryKeyChord(const KeyChord& chord)
+        {
+            const auto modifiers = chord.Modifiers();
+            const auto controlPressed = (modifiers & winrt::Windows::System::VirtualKeyModifiers::Control) !=
+                                        winrt::Windows::System::VirtualKeyModifiers::None;
+            const auto altPressed = (modifiers & winrt::Windows::System::VirtualKeyModifiers::Menu) !=
+                                    winrt::Windows::System::VirtualKeyModifiers::None;
+            const auto winPressed = (modifiers & winrt::Windows::System::VirtualKeyModifiers::Windows) !=
+                                    winrt::Windows::System::VirtualKeyModifiers::None;
+            if (!controlPressed || altPressed || winPressed)
+            {
+                return false;
+            }
+
+            if (chord.Vkey() == static_cast<int32_t>(VirtualKey::C))
+            {
+                return _control.CopySelectionToClipboard(true, false, false, CopyFormat::None);
+            }
+            if (chord.Vkey() == static_cast<int32_t>(VirtualKey::V))
+            {
+                _control.PasteTextFromClipboard();
+                return true;
+            }
+            return false;
+        }
+
+        bool IsKeyChordExplicitlyUnbound(const KeyChord&)
+        {
+            return false;
+        }
+
+    private:
+        TermControl _control{ nullptr };
+    };
+
     class Session
     {
     public:
-        Session(SessionRequest sessionRequest, DesktopWindowXamlSource source, HWND hostWindow, HWND islandWindow, winrt::com_ptr<HostControlSettings> settings, TermControl control, ITerminalConnection connection) :
+        Session(SessionRequest sessionRequest,
+                DesktopWindowXamlSource source,
+                HWND hostWindow,
+                HWND islandWindow,
+                winrt::com_ptr<HostControlSettings> settings,
+                TermControl control,
+                ITerminalConnection connection,
+                Grid root,
+                Border card,
+                TextBox input) :
             request(std::move(sessionRequest)),
             id(request.sessionId),
             xamlSource(std::move(source)),
@@ -541,12 +678,45 @@ namespace
             island(std::move(islandWindow)),
             settingsImpl(std::move(settings)),
             termControl(std::move(control)),
-            terminalConnection(std::move(connection))
+            terminalConnection(std::move(connection)),
+            rootGrid(std::move(root)),
+            composerCard(std::move(card)),
+            composer(std::move(input))
         {
         }
 
         ~Session()
         {
+            try
+            {
+                if (composer && composerKeyDown.value)
+                {
+                    composer.KeyDown(composerKeyDown);
+                }
+                if (composer && composerKeyUp.value)
+                {
+                    composer.KeyUp(composerKeyUp);
+                }
+                if (termControl && termPointerPressed.value)
+                {
+                    termControl.PointerPressed(termPointerPressed);
+                }
+                if (termControl && writeToClipboard.value)
+                {
+                    termControl.WriteToClipboard(writeToClipboard);
+                }
+                if (termControl && pasteFromClipboard.value)
+                {
+                    termControl.PasteFromClipboard(pasteFromClipboard);
+                }
+                if (termControl)
+                {
+                    termControl.KeyBindings(nullptr);
+                }
+            }
+            catch (...)
+            {
+            }
             if (termControl && restartRequested.value)
             {
                 try
@@ -585,6 +755,90 @@ namespace
             }
         }
 
+        void installComposerHandlers()
+        {
+            const auto enterDown = std::make_shared<std::atomic_bool>(false);
+            composerKeyDown = composer.KeyDown(
+                [connection = terminalConnection, sessionId = id, enterDown](
+                    const winrt::Windows::Foundation::IInspectable& sender,
+                    const KeyRoutedEventArgs& args) {
+                    if (args.OriginalKey() != VirtualKey::Enter)
+                    {
+                        return;
+                    }
+                    args.Handled(true);
+                    if (enterDown->exchange(true))
+                    {
+                        return;
+                    }
+
+                    const auto input = sender.as<TextBox>().Text();
+                    std::vector<char16_t> payload(input.c_str(), input.c_str() + input.size());
+                    payload.push_back(u'\r');
+                    try
+                    {
+                        connection.WriteInput(payload);
+                        sender.as<TextBox>().Text(winrt::hstring{});
+                        emitDiagnostic("composer submit session=" + sessionId + " chars=" + std::to_string(input.size()));
+                    }
+                    catch (const winrt::hresult_error& error)
+                    {
+                        emitDiagnostic("composer submit failed session=" + sessionId + " error=" + hresultMessage(error));
+                    }
+                    catch (const std::exception& error)
+                    {
+                        emitDiagnostic("composer submit failed session=" + sessionId + " error=" + std::string(error.what()));
+                    }
+                });
+            composerKeyUp = composer.KeyUp(
+                [enterDown](const winrt::Windows::Foundation::IInspectable&, const KeyRoutedEventArgs& args) {
+                    if (args.OriginalKey() == VirtualKey::Enter)
+                    {
+                        enterDown->store(false);
+                    }
+                });
+            termPointerPressed = termControl.PointerPressed(
+                [](const winrt::Windows::Foundation::IInspectable& sender, const PointerRoutedEventArgs&) {
+                    const auto control = sender.as<TermControl>();
+                    control.Focus(FocusState::Pointer);
+                });
+        }
+
+        void installClipboardHandlers()
+        {
+            writeToClipboard = termControl.WriteToClipboard(
+                [owner = host](const winrt::Windows::Foundation::IInspectable&, const WriteToClipboardEventArgs& args) {
+                    writeClipboardText(owner, args.Plain());
+                });
+            pasteFromClipboard = termControl.PasteFromClipboard(
+                [owner = host](const winrt::Windows::Foundation::IInspectable&, const PasteFromClipboardEventArgs& args) {
+                    if (const auto text = readClipboardText(owner))
+                    {
+                        args.HandleClipboardData(*text);
+                    }
+                });
+            keyBindings = winrt::make_self<HostKeyBindings>(termControl);
+            termControl.KeyBindings(keyBindings.as<IKeyBindings>());
+        }
+
+        void applyTheme(bool dark)
+        {
+            const auto background = dark ? Color{ 0xff, 0x0b, 0x0d, 0x10 } : Color{ 0xff, 0xf5, 0xf7, 0xfa };
+            const auto cardBackground = dark ? Color{ 0xf2, 0x1d, 0x23, 0x2c } : Color{ 0xf2, 0xff, 0xff, 0xff };
+            const auto inputBackground = dark ? Color{ 0xff, 0x12, 0x16, 0x1c } : Color{ 0xff, 0xff, 0xff, 0xff };
+            const auto foreground = dark ? Color{ 0xff, 0xf4, 0xf7, 0xfb } : Color{ 0xff, 0x1b, 0x1f, 0x24 };
+            const auto border = dark ? Color{ 0xff, 0x3b, 0x45, 0x53 } : Color{ 0xff, 0xd2, 0xd8, 0xe0 };
+
+            rootGrid.RequestedTheme(dark ? ElementTheme::Dark : ElementTheme::Light);
+            rootGrid.Background(SolidColorBrush(background));
+            composerCard.Background(SolidColorBrush(cardBackground));
+            composerCard.BorderBrush(SolidColorBrush(border));
+            composerCard.BorderThickness(Thickness{ 1.0, 1.0, 1.0, 1.0 });
+            composer.Background(SolidColorBrush(inputBackground));
+            composer.BorderBrush(SolidColorBrush(border));
+            composer.Foreground(SolidColorBrush(foreground));
+        }
+
         SessionRequest request;
         std::string id;
         DesktopWindowXamlSource xamlSource{ nullptr };
@@ -593,8 +847,17 @@ namespace
         winrt::com_ptr<HostControlSettings> settingsImpl;
         TermControl termControl{ nullptr };
         ITerminalConnection terminalConnection{ nullptr };
+        Grid rootGrid{ nullptr };
+        Border composerCard{ nullptr };
+        TextBox composer{ nullptr };
         winrt::event_token stateChanged{};
         winrt::event_token restartRequested{};
+        winrt::event_token composerKeyDown{};
+        winrt::event_token composerKeyUp{};
+        winrt::event_token termPointerPressed{};
+        winrt::event_token writeToClipboard{};
+        winrt::event_token pasteFromClipboard{};
+        winrt::com_ptr<HostKeyBindings> keyBindings;
         std::atomic_bool processWatchStarted = false;
     };
 
@@ -714,9 +977,34 @@ namespace
             {
                 throw withHresultContext("TermControl.CreateInstance2", error);
             }
+            auto root = Grid{};
+            root.HorizontalAlignment(HorizontalAlignment::Stretch);
+            root.VerticalAlignment(VerticalAlignment::Stretch);
+            root.Children().Append(control);
+
+            auto composerCard = Border{};
+            composerCard.HorizontalAlignment(HorizontalAlignment::Stretch);
+            composerCard.VerticalAlignment(VerticalAlignment::Bottom);
+            composerCard.Margin(Thickness{ 12.0, 0.0, 12.0, 12.0 });
+            composerCard.Padding(Thickness{ 10.0, 8.0, 10.0, 8.0 });
+            composerCard.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 10.0, 10.0, 10.0, 10.0 });
+
+            auto composer = TextBox{};
+            composer.HorizontalAlignment(HorizontalAlignment::Stretch);
+            composer.VerticalAlignment(VerticalAlignment::Center);
+            composer.Height(40.0);
+            composer.AcceptsReturn(false);
+            composer.IsSpellCheckEnabled(false);
+            composer.PlaceholderText(winrt::hstring(L"Message Pi"));
+            composer.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(winrt::hstring(L"Cascadia Mono")));
+            composer.FontSize(14.0);
+            composer.Padding(Thickness{ 12.0, 0.0, 12.0, 0.0 });
+            composerCard.Child(composer);
+            root.Children().Append(composerCard);
+
             try
             {
-                source.Content(control);
+                source.Content(root);
             }
             catch (const winrt::hresult_error& error)
             {
@@ -733,7 +1021,20 @@ namespace
                 std::max(1L, hostRect.bottom - hostRect.top),
                 SWP_SHOWWINDOW | SWP_NOACTIVATE);
 
-            auto session = std::make_shared<Session>(request, std::move(source), hostWindow, islandWindow, std::move(settingsImpl), control, connection);
+            auto session = std::make_shared<Session>(
+                request,
+                std::move(source),
+                hostWindow,
+                islandWindow,
+                std::move(settingsImpl),
+                control,
+                connection,
+                root,
+                composerCard,
+                composer);
+            session->applyTheme(_darkTheme);
+            session->installComposerHandlers();
+            session->installClipboardHandlers();
             watchConnection(session);
             session->restartRequested = control.RestartTerminalRequested([this, sessionId = request.sessionId](const auto&, const auto&) {
                 try
@@ -809,12 +1110,14 @@ namespace
         {
             const auto themeName = namedString(command, L"theme");
             const auto dark = themeName != "light";
+            _darkTheme = dark;
             for (const auto& [sessionId, session] : _sessions)
             {
                 session->settingsImpl->DefaultForeground(dark ? til::color{ 0xff, 0xff, 0xff } : til::color{ 0x00, 0x00, 0x00 });
                 session->settingsImpl->DefaultBackground(dark ? til::color{ 0x00, 0x00, 0x00 } : til::color{ 0xff, 0xff, 0xff });
                 const auto settings = session->settingsImpl.as<IControlSettings>();
                 session->termControl.UpdateControlSettings(settings, settings);
+                session->applyTheme(dark);
             }
         }
 
@@ -981,6 +1284,7 @@ namespace
         XamlApplication _xamlApplication{ nullptr };
         DispatcherQueueController _dispatcherController{ nullptr };
         std::unordered_map<std::string, std::shared_ptr<Session>> _sessions;
+        bool _darkTheme = true;
     };
 
     fs::path executableDirectory()

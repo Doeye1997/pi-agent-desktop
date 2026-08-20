@@ -85,6 +85,21 @@ test("session display forwards composer, resize, native bounds, and theme operat
   ]);
 });
 
+test("composer seam forwards one complete Unicode line with CR", () => {
+  const host = createFakeHost();
+  const manager = createSessionDisplayManager({
+    createHost: () => host,
+    getParentWindowHandle: () => "hwnd:cockpit",
+  });
+  manager.start(request());
+
+  manager.write("sess-1", "你好，Pi\r");
+
+  const writes = host.calls.filter(([type]) => type === "write");
+  assert.deepEqual(writes, [["write", "sess-1", "你好，Pi\r"]]);
+  assert.equal(writes[0][2].endsWith("\r"), true);
+});
+
 test("missing Windows Terminal host becomes a dead mark and hard error without fallback", () => {
   const errors = [];
   const manager = createSessionDisplayManager({
