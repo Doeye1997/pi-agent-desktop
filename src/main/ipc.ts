@@ -219,8 +219,7 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
   };
   const sessionDisplayManager = createSessionDisplayManager({
     getParentWindowHandle,
-    onMark(sessionId, mark) {
-      getHostManager()?.setCockpitRunning(sessionId, mark === "running");
+    onMark() {
       emitSessionDisplayMarks();
     },
     onError(error) {
