@@ -11,6 +11,7 @@
 | Topic                         | Owner                                                                                      | Do not treat as truth |
 | ----------------------------- | ------------------------------------------------------------------------------------------ | --------------------- |
 | Agent verify / release env    | `.codex/agent-loop/*`                                                                      | agent memory          |
+| Pi runtime/config locations   | `F:/Project/claude/skills/config/pi/README.md`                                              | `F:/PiData`           |
 | Desktop IPC / host lifecycle  | `src/main/`, `src/agent-host/`                                                             | chat recap            |
 | Hang / abort decisions        | `docs/decisions/2026-08-17-session-hang.md`                                                | this chat             |
 | Session relocate decisions    | `docs/decisions/2026-08-18-session-relocate.md`                                            | this chat             |
@@ -21,4 +22,4 @@
 
 ## Drift debt
 
-- (2026-08-17) pack created; no dual-truth found
+- (2026-08-20) Pi runtime moved from `F:/PiData` to the skills repo `.runtime/pi`; authoritative launcher and docs live in `config/pi/`.
