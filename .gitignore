@@ -9,7 +9,9 @@ temp/
 .env
 .env.*
 .artifacts/
+.dev-user-data/
 .pi/extensions/
+.scratch/wt-xaml-island/terminal-build-overrides.props
 build/toolchains/.core-cache/
 build/toolchains/core/
 build/toolchains/windows-terminal/
@@ -18,5 +20,11 @@ build/toolchains/Microsoft.Toolkit.Win32.UI.XamlApplication.6.1.3.nupkg
 build/toolchains/Microsoft.Toolkit.Win32-source/
 build/electron-cache/
 native/wt-xaml-island/*.exe
+native/wt-xaml-island/*.ilk
 native/wt-xaml-island/*.obj
+native/wt-xaml-island/*.pdb
+native/wt-xaml-island/Microsoft.Toolkit.Win32.UI.XamlHost.dll
+native/wt-xaml-island/Microsoft.Toolkit.Win32.UI.XamlHost.pri
+native/wt-xaml-island/Microsoft.Toolkit.Win32.UI.XamlHost.winmd
+native/wt-xaml-island/Microsoft.Toolkit.Win32.UI.XamlHost.xml
 native/wt-xaml-island/obj/
