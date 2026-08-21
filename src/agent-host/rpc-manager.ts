@@ -896,7 +896,7 @@ export class AgentSessionWrapper {
             );
           }
         }
-        const agent = this.inner.agent as { waitForIdle?: () => Promise<void>; dispose?: () => void | Promise<void> };
+        const agent = this.inner.agent as { waitForIdle?: () => Promise<void> };
         try {
           await agent.waitForIdle?.();
         } catch (error) {
@@ -905,7 +905,16 @@ export class AgentSessionWrapper {
           );
         }
         try {
-          await agent.dispose?.();
+          if (this.inner.extensionRunner.hasHandlers?.("session_shutdown")) {
+            await this.inner.extensionRunner.emit?.({ type: "session_shutdown", reason: "quit" });
+          }
+        } catch (error) {
+          console.warn(
+            `[pi-desktop] session_shutdown failed during ${reason} for ${this.sessionId}: ${error instanceof Error ? error.name : "UnknownError"}`,
+          );
+        }
+        try {
+          this.inner.dispose();
         } catch (error) {
           console.warn(
             `[pi-desktop] session dispose failed during ${reason} for ${this.sessionId}: ${error instanceof Error ? error.name : "UnknownError"}`,

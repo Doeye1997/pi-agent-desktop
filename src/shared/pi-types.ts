@@ -70,6 +70,8 @@ interface ExtensionRunnerLike {
     sourceInfo: SlashCommandInfo["sourceInfo"];
   }>;
   setUIContext?(uiContext?: unknown, mode?: "tui" | "rpc" | "json" | "print"): void;
+  hasHandlers?(event: string): boolean;
+  emit?(event: { type: string; reason?: string }): Promise<unknown>;
 }
 
 type DialogOptionsLike = {
@@ -155,6 +157,7 @@ export interface AgentSessionLike {
     options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
   ): Promise<void>;
   abort(): Promise<void>;
+  dispose(): void;
   setModel(model: ModelLike): Promise<void>;
   navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<NavigateTreeResult>;
   setThinkingLevel(level: string): void;
