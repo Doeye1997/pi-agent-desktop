@@ -23,8 +23,11 @@ import {
   CredentialSynchronizationError,
   ModelRuntime,
   SessionManager,
+  createAgentSessionFromServices,
   createAgentSessionServices,
   getAgentDir,
+  type AgentSessionServices,
+  type CreateAgentSessionServicesOptions,
   type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type AuthInteraction } from "@earendil-works/pi-ai";
@@ -118,6 +121,61 @@ import {
 import { getSessionContentSnapshot, invalidateSessionContent } from "./session-content-cache";
 import { sessionIndex } from "./session-index";
 import { credentialStateMatches, recoverCommittedCredential, type CredentialTarget } from "./credential-sync";
+
+type ServiceOnlySessionOptions = Pick<CreateAgentSessionServicesOptions, "cwd" | "agentDir" | "modelRuntimeSignal">;
+
+type DisposableAgentSessionServices = AgentSessionServices & {
+  dispose(): Promise<void>;
+};
+
+async function createServiceOnlyAgentSessionServices(
+  options: ServiceOnlySessionOptions,
+): Promise<DisposableAgentSessionServices> {
+  const services = await createAgentSessionServices(options);
+  const { session } = await createAgentSessionFromServices({
+    services,
+    sessionManager: SessionManager.inMemory(options.cwd),
+    noTools: "all",
+  });
+  let disposed = false;
+
+  return {
+    ...services,
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      try {
+        if (session.extensionRunner.hasHandlers("session_shutdown")) {
+          await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+        }
+      } catch (error) {
+        console.warn(
+          `[agent-host] temporary session shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } finally {
+        try {
+          session.dispose();
+        } catch (error) {
+          console.warn(
+            `[agent-host] temporary session dispose failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    },
+  };
+}
+
+async function withServiceOnlyAgentSessionServices<T>(
+  options: ServiceOnlySessionOptions,
+  run: (services: DisposableAgentSessionServices) => Promise<T>,
+): Promise<T> {
+  const services = await createServiceOnlyAgentSessionServices(options);
+  try {
+    return await run(services);
+  } finally {
+    await services.dispose();
+  }
+}
 
 const IGNORED_NAMES = new Set([
   "node_modules",
@@ -420,8 +478,9 @@ const AUTO_TITLE_SYSTEM_PROMPT =
   "Rules: match the language of the message; return only a short noun phrase " +
   `of at most ${AUTO_TITLE_MAX_LENGTH} characters; no quotes, no trailing punctuation, no Markdown.`;
 
-type TitleSessionServices = Awaited<ReturnType<typeof createAgentSessionServices>>;
-type TitleModelServices = Pick<TitleSessionServices, "modelRuntime" | "settingsManager">;
+type TitleModelServices = Pick<AgentSessionServices, "modelRuntime" | "settingsManager"> & {
+  dispose?: () => Promise<void>;
+};
 
 function resolveTitleModel(
   services: TitleModelServices,
@@ -484,14 +543,17 @@ export async function generateSessionTitleWithFallback(
   provider?: string,
   modelId?: string,
 ): Promise<string> {
+  let services: TitleModelServices | undefined;
   try {
-    const services = await createServices();
+    services = await createServices();
     const generated = await generateSessionTitle(services, message, provider, modelId);
     return generated ?? makeFallbackTitle(message);
   } catch {
     // Service creation can fail before a model request starts (for example,
     // while loading project resources). The local fallback must still apply.
     return makeFallbackTitle(message);
+  } finally {
+    await services?.dispose?.();
   }
 }
 
@@ -1234,7 +1296,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
       const finalTitle = await generateSessionTitleWithFallback(
         target.services
           ? async () => target.services as TitleModelServices
-          : () => createAgentSessionServices({ cwd: target.cwd, agentDir: getAgentDir() }),
+          : () => createServiceOnlyAgentSessionServices({ cwd: target.cwd }),
         message,
         body.provider,
         body.modelId,
@@ -1574,13 +1636,14 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
     "models.list": async (params) => {
       const cwd = resolveModelsCwd(params as { cwd?: string } | void);
       const agentDir = getAgentDir();
-      const services = await createAgentSessionServices({ cwd, agentDir });
-      return projectModelsList(services.modelRuntime, services.settingsManager, {
-        source: process.env.PI_OFFLINE === undefined ? "cache" : "offline",
-        refreshed: false,
-        aborted: false,
-        warnings: [],
-      });
+      return withServiceOnlyAgentSessionServices({ cwd, agentDir }, (services) =>
+        projectModelsList(services.modelRuntime, services.settingsManager, {
+          source: process.env.PI_OFFLINE === undefined ? "cache" : "offline",
+          refreshed: false,
+          aborted: false,
+          warnings: [],
+        }),
+      );
     },
 
     "models.refresh": async (params) => {
@@ -1590,16 +1653,25 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
       }
       const cwd = resolveModelsCwd(params);
       const agentDir = getAgentDir();
-      return modelCatalogRefreshCoordinator.refresh(
-        cwd,
-        requestId,
-        (signal) => createAgentSessionServices({ cwd, agentDir, modelRuntimeSignal: signal }),
-        ({ services, catalog }, signal) =>
-          projectModelsList(services.modelRuntime, services.settingsManager, catalog, {
-            signal,
-            cachedOnly: catalog.aborted,
-          }),
-      );
+      let servicesPromise: Promise<DisposableAgentSessionServices> | undefined;
+      try {
+        return await modelCatalogRefreshCoordinator.refresh(
+          cwd,
+          requestId,
+          (signal) => {
+            servicesPromise = createServiceOnlyAgentSessionServices({ cwd, agentDir, modelRuntimeSignal: signal });
+            return servicesPromise;
+          },
+          ({ services, catalog }, signal) =>
+            projectModelsList(services.modelRuntime, services.settingsManager, catalog, {
+              signal,
+              cachedOnly: catalog.aborted,
+            }),
+        );
+      } finally {
+        const services = await servicesPromise?.catch(() => undefined);
+        await services?.dispose();
+      }
     },
 
     "models.refreshCancel": (params) => {
@@ -1609,22 +1681,24 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
 
     "models.preferences.get": async (params) => {
       const cwd = resolveModelsCwd(params as { cwd?: string } | void);
-      const services = await createAgentSessionServices({ cwd, agentDir: getAgentDir() });
-      const { models: available } = await resolveAvailableModels(services.modelRuntime);
-      return projectModelPreferences(available, services.settingsManager.getEnabledModels());
+      return withServiceOnlyAgentSessionServices({ cwd }, async (services) => {
+        const { models: available } = await resolveAvailableModels(services.modelRuntime);
+        return projectModelPreferences(available, services.settingsManager.getEnabledModels());
+      });
     },
 
     "models.preferences.set": async (params) => {
       const body = params as { cwd?: string; enabledModels?: unknown };
       const cwd = resolveModelsCwd(body);
       const enabledModels = normalizeEnabledModelsInput(body.enabledModels);
-      const services = await createAgentSessionServices({ cwd, agentDir: getAgentDir() });
-      const { models: available } = await resolveAvailableModels(services.modelRuntime);
-      if (enabledModels && !hasMatchingEnabledModel(available, enabledModels)) {
-        throw new RpcError({ code: "BAD_REQUEST", message: "At least one available model must remain enabled" });
-      }
-      services.settingsManager.setEnabledModels(enabledModels);
-      return projectModelPreferences(available, enabledModels);
+      return withServiceOnlyAgentSessionServices({ cwd }, async (services) => {
+        const { models: available } = await resolveAvailableModels(services.modelRuntime);
+        if (enabledModels && !hasMatchingEnabledModel(available, enabledModels)) {
+          throw new RpcError({ code: "BAD_REQUEST", message: "At least one available model must remain enabled" });
+        }
+        services.settingsManager.setEnabledModels(enabledModels);
+        return projectModelPreferences(available, enabledModels);
+      });
     },
 
     "modelsConfig.get": () => readModelsJsonSnapshot(),

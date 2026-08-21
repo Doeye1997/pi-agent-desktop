@@ -1,6 +1,6 @@
 import { importTestBundle } from "#test-bundle";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -90,6 +90,35 @@ test("auto-title keeps the local fallback when service creation fails", async ()
   }, "  Fix\n the login page  ");
 
   assert.equal(title, "Fix the login page");
+});
+
+test("auto-title disposes temporary services after using the local fallback", async () => {
+  const { generateSessionTitleWithFallback } = await loadHandlersModule();
+  let disposeCalls = 0;
+  const title = await generateSessionTitleWithFallback(
+    async () => ({
+      modelRuntime: {
+        getAvailableSnapshot() {
+          return [];
+        },
+      },
+      settingsManager: {
+        getDefaultProvider() {
+          return undefined;
+        },
+        getDefaultModel() {
+          return undefined;
+        },
+      },
+      async dispose() {
+        disposeCalls += 1;
+      },
+    }),
+    "Fix the login page",
+  );
+
+  assert.equal(title, "Fix the login page");
+  assert.equal(disposeCalls, 1);
 });
 
 test("conditional auto-title writes never replace a manual session name", async (t) => {
@@ -241,6 +270,42 @@ test("model list projection isolates provider availability failures and keeps th
     },
   ]);
   assert.doesNotMatch(JSON.stringify(result), /secret provider failure detail/);
+});
+
+test("service-only model queries shut configured session extensions down", async (t) => {
+  const extensionPath = path.join(isolatedAgentDirectory, "model-query-extension.js");
+  const loadedMarkerPath = path.join(isolatedAgentDirectory, "model-query-extension-loaded.txt");
+  const shutdownMarkerPath = path.join(isolatedAgentDirectory, "model-query-extension-shutdown.txt");
+  const settingsPath = path.join(isolatedAgentDirectory, "settings.json");
+  const previousSettings = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : null;
+  t.after(() => {
+    if (previousSettings === null) {
+      rmSync(settingsPath, { force: true });
+    } else {
+      writeFileSync(settingsPath, previousSettings, "utf8");
+    }
+  });
+
+  writeFileSync(
+    extensionPath,
+    `import { appendFileSync, writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(loadedMarkerPath)}, "loaded", "utf8");\nexport default function modelQueryExtension(pi) {\n  pi.registerProvider("fixture-provider", {\n    baseUrl: "https://example.invalid",\n    apiKey: "fixture-key",\n    api: "openai-completions",\n    models: [{\n      id: "fixture-model",\n      name: "Fixture Model",\n      reasoning: false,\n      input: ["text"],\n      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },\n      contextWindow: 4096,\n      maxTokens: 1024\n    }]\n  });\n  pi.on("session_shutdown", () => appendFileSync(${JSON.stringify(shutdownMarkerPath)}, "shutdown\\n", "utf8"));\n}\n`,
+    "utf8",
+  );
+  writeFileSync(settingsPath, JSON.stringify({ extensions: [extensionPath] }), "utf8");
+
+  const { handlers } = await captureHandlers();
+  const result = await handlers["models.list"]({ cwd: root });
+  await handlers["models.refresh"]({ cwd: root, requestId: "extension-shutdown" });
+  await handlers["models.preferences.get"]({ cwd: root });
+  await handlers["models.preferences.set"]({ cwd: root, enabledModels: null });
+
+  assert.equal(existsSync(loadedMarkerPath), true);
+  assert.equal(existsSync(shutdownMarkerPath), true);
+  assert.equal(
+    result.models.some((model) => model.provider === "fixture-provider"),
+    true,
+  );
+  assert.equal(readFileSync(shutdownMarkerPath, "utf8").trim().split("\n").length, 4);
 });
 
 test("file, git, worktree, skill, plugin, and system handlers return contract-shaped results", async (t) => {
