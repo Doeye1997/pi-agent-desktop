@@ -5,6 +5,7 @@ import { readSessionArchived } from "../../shared/session-archive.ts";
 import {
   filterSessionsForSidebar,
   groupSessionsByProject,
+  nextLiveSessionAfterArchive,
   projectFoldersForSidebar,
   sessionProjectLabel,
 } from "./sessions.ts";
@@ -117,6 +118,15 @@ test("groups live sessions into project folders by latest activity", () => {
       ["a", ["older", "sibling"]],
     ],
   );
+});
+
+test("archive switch picks the newest remaining live session", () => {
+  const older = session("older", { modified: "2026-07-01T00:00:00.000Z" });
+  const newer = session("newer", { modified: "2026-07-15T00:00:00.000Z" });
+  const archived = session("old", { archived: true, modified: "2026-07-16T00:00:00.000Z" });
+  assert.equal(nextLiveSessionAfterArchive([older, newer, archived], "newer")?.id, "older");
+  assert.equal(nextLiveSessionAfterArchive([older, archived], "older"), null);
+  assert.equal(nextLiveSessionAfterArchive([archived], "old"), null);
 });
 
 test("archive flag follows the last desktop.archived custom entry", () => {

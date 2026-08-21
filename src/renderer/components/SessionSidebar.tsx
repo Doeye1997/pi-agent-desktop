@@ -22,6 +22,7 @@ import {
   ForkProjectPickerLabel,
   ForkProjectTag,
   forkOnKillSession,
+  nextLiveSessionAfterArchive,
   useForkSessionList,
   useSessionTuiMarks,
 } from "@/fork";
@@ -39,6 +40,7 @@ interface Props {
   onInitialRestoreDone?: () => void;
   refreshKey?: number;
   onSessionDeleted?: (sessionId: string) => void;
+  onSessionArchived?: (sessionId: string, nextLive: SessionInfo | null) => void;
   onSessionRelocated?: (session: SessionInfo) => void;
   worktreeSlot?: HTMLElement | null;
   selectedCwd?: string | null;
@@ -359,6 +361,7 @@ export function SessionSidebar({
   onInitialRestoreDone,
   refreshKey,
   onSessionDeleted,
+  onSessionArchived,
   onSessionRelocated,
   worktreeSlot,
   selectedCwd: selectedCwdProp,
@@ -868,10 +871,24 @@ export function SessionSidebar({
   // open session after manually switching worktrees.
   const handleSelectSessionFromList = useCallback(
     (s: SessionInfo) => {
+      if (s.archived) return;
       if (s.cwd) setSelectedCwd(s.cwd);
       onSelectSession(s);
     },
     [onSelectSession],
+  );
+
+  const handleArchived = useCallback(
+    (sessionId: string, archived: boolean) => {
+      if (archived) {
+        onSessionArchived?.(
+          sessionId,
+          selectedSessionId === sessionId ? nextLiveSessionAfterArchive(allSessions, sessionId) : null,
+        );
+      }
+      void loadSessions();
+    },
+    [allSessions, loadSessions, onSessionArchived, selectedSessionId],
   );
 
   const startSessionIn = useCallback(
@@ -2064,7 +2081,7 @@ export function SessionSidebar({
                       unreadSessionIds={unreadSessionIds}
                       onSelectSession={handleSelectSessionFromList}
                       onRenamed={loadSessions}
-                      onArchived={loadSessions}
+                      onArchived={handleArchived}
                       onRelocated={onSessionRelocated}
                       showProjectTag={false}
                       onSessionDeleted={(id) => {
@@ -2102,7 +2119,7 @@ export function SessionSidebar({
                             unreadSessionIds={unreadSessionIds}
                             onSelectSession={handleSelectSessionFromList}
                             onRenamed={loadSessions}
-                            onArchived={loadSessions}
+                            onArchived={handleArchived}
                             onRelocated={onSessionRelocated}
                             showProjectTag={showProjectTag}
                             onSessionDeleted={(id) => {
@@ -2137,7 +2154,7 @@ export function SessionSidebar({
             isUnread={unreadSessionIds.has(session.id)}
             onClick={() => handleSelectSessionFromList(session)}
             onRenamed={loadSessions}
-            onArchived={loadSessions}
+            onArchived={handleArchived}
             onRelocated={onSessionRelocated}
             onStopTui={() => forkOnKillSession(session.id)}
             showProjectTag={showProjectTag}
@@ -2173,7 +2190,7 @@ function SessionTreeItem({
   unreadSessionIds: Set<string>;
   onSelectSession: (s: SessionInfo) => void;
   onRenamed?: () => void;
-  onArchived?: () => void;
+  onArchived?: (sessionId: string, archived: boolean) => void;
   onRelocated?: (session: SessionInfo) => void;
   showProjectTag?: boolean;
   onSessionDeleted?: (id: string) => void;
@@ -2370,7 +2387,7 @@ function SessionItem({
   isUnread?: boolean;
   onClick: () => void;
   onRenamed?: () => void;
-  onArchived?: () => void;
+  onArchived?: (sessionId: string, archived: boolean) => void;
   onRelocated?: (session: SessionInfo) => void;
   onStopTui?: () => void;
   showProjectTag?: boolean;
@@ -2523,7 +2540,7 @@ function SessionItem({
           window.alert(body.error ?? `Archive failed (${res.status})`);
           return;
         }
-        onArchived?.();
+        onArchived?.(session.id, !session.archived);
       } catch (err) {
         window.alert(err instanceof Error ? err.message : String(err));
       }

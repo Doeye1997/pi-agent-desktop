@@ -19,7 +19,7 @@ The Host owns active Agent turns, shell descendants, session persistence, and no
 ## Lifetime contract
 
 - A connected Electron keeps Host alive.
-- With no Electron and no running Agent task, Host exits after a short idle delay.
+- With no Electron and no running Agent task, Host exits after the reconnect grace (30s), not 250ms. The short delay is only for `replace-when-idle`. See `docs/decisions/2026-08-21-archive-kill-pi-keep-host.md`.
 - Chat-channel connections do not keep Host alive.
 - A Host build change requests replacement only when active work is idle; live work is not migrated.
 - A Host crash is not replayed. Existing restart/reconnect signaling marks the interrupted UI state.

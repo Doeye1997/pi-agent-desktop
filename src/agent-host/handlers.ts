@@ -1014,6 +1014,9 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
         invalidateSessionContent(filePath);
       }
       await emitIndexedSessionChange(server, id, null);
+      if (archived && existing?.isAlive()) {
+        void existing.dispose({ abort: true, reason: "archived" });
+      }
       return { ok: true as const };
     },
 

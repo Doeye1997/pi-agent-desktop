@@ -14,6 +14,7 @@
 | Pi runtime/config locations    | `F:/Project/claude/skills/config/pi/README.md`                                             | `F:/PiData`           |
 | Desktop IPC / host lifecycle   | `src/main/`, `src/agent-host/`                                                             | chat recap            |
 | Standalone Agent Host lifetime | `docs/decisions/2026-08-20-standalone-agent-host.md`                                       | chat recap            |
+| Archive vs PI / Host stay      | `docs/decisions/2026-08-21-archive-kill-pi-keep-host.md`                                   | this chat             |
 | Hang / abort decisions         | `docs/decisions/2026-08-17-session-hang.md`                                                | this chat             |
 | Session relocate decisions     | `docs/decisions/2026-08-18-session-relocate.md`                                            | this chat             |
 | TUI input chrome / UI kit      | `docs/decisions/2026-08-18-tui-input-chrome.md`                                            | this chat             |

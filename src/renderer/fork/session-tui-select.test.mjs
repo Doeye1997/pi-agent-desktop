@@ -39,6 +39,23 @@ test("selecting another session publishes the same start/focus path so the right
   ]);
 });
 
+test("selecting an archived session does not start pi", () => {
+  const calls = [];
+  globalThis.window = {
+    piBridge: {
+      startSessionDisplay(session) {
+        calls.push(session);
+      },
+    },
+  };
+  forkOnSelectSession({
+    id: "old",
+    cwd: "F:/Project/dlyzzt-pi-desktop",
+    archived: true,
+  });
+  assert.deepEqual(calls, []);
+});
+
 test("relocating a session explicitly requests a remount", () => {
   const calls = [];
   globalThis.window = {

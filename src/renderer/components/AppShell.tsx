@@ -9,7 +9,13 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { forkOnNewSession, forkOnSelectSession, shouldCollapseSidebarAfterSessionPick, type CockpitRole } from "@/fork";
+import {
+  forkOnKillSession,
+  forkOnNewSession,
+  forkOnSelectSession,
+  shouldCollapseSidebarAfterSessionPick,
+  type CockpitRole,
+} from "@/fork";
 import { ChangeSessionCwd } from "./ChangeSessionCwd";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
@@ -513,6 +519,7 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
 
   const handleSelectSession = useCallback(
     (session: SessionInfo, isRestore = false) => {
+      if (session.archived) return;
       const relocatedSession = relocatedSessionsRef.current.get(session.id);
       const selected = relocatedSession ?? session;
       if (relocatedSession) relocatedSessionsRef.current.delete(session.id);
@@ -646,6 +653,26 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
     [selectedSession, router],
   );
 
+  const handleSessionArchived = useCallback(
+    (sessionId: string, nextLive: SessionInfo | null) => {
+      thinkingExpansionRegistryRef.current.delete(sessionId);
+      processDetailsExpansionRegistryRef.current.delete(sessionId);
+      forkOnKillSession(sessionId);
+      setRefreshKey((k) => k + 1);
+      if (selectedSession?.id !== sessionId) return;
+      if (nextLive) {
+        handleSelectSession(nextLive);
+        return;
+      }
+      setSelectedSession(null);
+      setNewSessionCwd(null);
+      setSessionKey((k) => k + 1);
+      setActiveTopPanel(null);
+      router.replace("/", { scroll: false });
+    },
+    [selectedSession, handleSelectSession, router],
+  );
+
   const handleOpenFile = useCallback(
     (filePath: string, fileName: string, sourceSessionId?: string | null) => {
       const tabId = `file:${filePath}`;
@@ -700,6 +727,7 @@ export function AppShell({ role = "full" }: { role?: CockpitRole } = {}) {
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
+        onSessionArchived={handleSessionArchived}
         onSessionRelocated={handleSessionRelocated}
         selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}

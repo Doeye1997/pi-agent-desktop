@@ -17,6 +17,13 @@ test("worktree chrome portals into the cockpit input slot when provided", () => 
   assert.match(source, /bottom: worktreeSlot \? "calc\(100% \+ 4px\)" : undefined/);
 });
 
+test("archive kills the session TUI and does not select archived rows", () => {
+  assert.match(source, /onSessionArchived\?: \(sessionId: string, nextLive: SessionInfo \| null\) => void/);
+  assert.match(source, /if \(s\.archived\) return;/);
+  assert.match(source, /onArchived=\{handleArchived\}/);
+  assert.match(source, /onArchived\?\.\(session\.id, !session\.archived\)/);
+});
+
 test("session overflow menu is the change-cwd entry", () => {
   assert.match(source, /t\("changeWorkingDirectory",\s*"Change working directory"\)/);
   assert.match(source, /const \[relocating, setRelocating\] = useState\(false\)/);

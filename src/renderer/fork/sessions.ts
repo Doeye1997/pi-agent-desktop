@@ -62,3 +62,12 @@ export function filterSessionsForSidebar(
     : scoped;
   return filterSessionsForQuery(byProject, options.query ?? "");
 }
+
+export function nextLiveSessionAfterArchive(sessions: SessionInfo[], archivedId: string): SessionInfo | null {
+  let next: SessionInfo | null = null;
+  for (const session of sessions) {
+    if (session.id === archivedId || session.archived) continue;
+    if (!next || session.modified > next.modified) next = session;
+  }
+  return next;
+}

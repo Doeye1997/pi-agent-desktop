@@ -64,14 +64,16 @@ using winrt::Windows::UI::Xaml::HorizontalAlignment;
 using winrt::Windows::UI::Xaml::Thickness;
 using winrt::Windows::UI::Xaml::VerticalAlignment;
 using winrt::Windows::UI::Xaml::Visibility;
+using winrt::Windows::UI::Xaml::GridLength;
+using winrt::Windows::UI::Xaml::GridUnitType;
 using winrt::Windows::UI::Xaml::Controls::Border;
+using winrt::Windows::UI::Xaml::Controls::ColumnDefinition;
 using winrt::Windows::UI::Xaml::Controls::ComboBox;
 using winrt::Windows::UI::Xaml::Controls::ComboBoxItem;
 using winrt::Windows::UI::Xaml::Controls::Grid;
-using winrt::Windows::UI::Xaml::Controls::VariableSizedWrapGrid;
-using winrt::Windows::UI::Xaml::Controls::MenuFlyout;
-using winrt::Windows::UI::Xaml::Controls::MenuFlyoutItem;
 using winrt::Windows::UI::Xaml::Controls::Orientation;
+using winrt::Windows::UI::Xaml::Controls::ScrollBarVisibility;
+using winrt::Windows::UI::Xaml::Controls::ScrollViewer;
 using winrt::Windows::UI::Xaml::Controls::SelectionChangedEventArgs;
 using winrt::Windows::UI::Xaml::Controls::StackPanel;
 using winrt::Windows::UI::Xaml::Controls::TextBox;
@@ -196,6 +198,21 @@ namespace
         return browserWindow;
     }
 
+    POINT electronContentOrigin(HWND browserWindow)
+    {
+        POINT origin{};
+        const auto contentWindow = findElectronContentWindow(browserWindow);
+        if (contentWindow == browserWindow || !IsWindow(contentWindow))
+        {
+            return origin;
+        }
+        if (!ClientToScreen(contentWindow, &origin) || !ScreenToClient(browserWindow, &origin))
+        {
+            return POINT{};
+        }
+        return origin;
+    }
+
     void attachSessionHostWindow(HWND window, HWND parentHandle)
     {
         const auto currentStyle = GetWindowLongPtrW(window, GWL_STYLE);
@@ -203,9 +220,26 @@ namespace
         SetLastError(ERROR_SUCCESS);
         if (!SetParent(window, parentHandle) && GetLastError() != ERROR_SUCCESS)
         {
-            throw std::runtime_error("failed to attach session host window to parent");
+            throw std::runtime_error("failed to attach session host window to parent, error=" + std::to_string(GetLastError()));
         }
 
+        SetWindowPos(window, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+    }
+
+    void detachSessionHostWindow(HWND window, HWND parkingWindow)
+    {
+        if (!window || !IsWindow(window) || !parkingWindow || !IsWindow(parkingWindow))
+        {
+            return;
+        }
+        ShowWindow(window, SW_HIDE);
+        const auto currentStyle = GetWindowLongPtrW(window, GWL_STYLE);
+        SetWindowLongPtrW(window, GWL_STYLE, (currentStyle & ~static_cast<LONG_PTR>(WS_POPUP)) | WS_CHILD);
+        SetLastError(ERROR_SUCCESS);
+        if (!SetParent(window, parkingWindow) && GetLastError() != ERROR_SUCCESS)
+        {
+            throw std::runtime_error("failed to park session host window, error=" + std::to_string(GetLastError()));
+        }
         SetWindowPos(window, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW);
     }
 
@@ -255,6 +289,40 @@ namespace
         std::string result(static_cast<size_t>(length), '\0');
         WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(), length, nullptr, nullptr);
         return result;
+    }
+
+    std::wstring foldedWide(std::wstring value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(), ::towlower);
+        return value;
+    }
+
+    std::optional<std::wstring> slashQuery(const winrt::hstring& text)
+    {
+        std::wstring value(text.c_str());
+        if (value.empty() || value.front() != L'/')
+        {
+            return std::nullopt;
+        }
+        if (value.find(L' ') != std::wstring::npos)
+        {
+            return std::nullopt;
+        }
+        return value.substr(1);
+    }
+
+    std::pair<std::wstring, std::wstring> splitSkillLabel(const std::wstring& label, const std::wstring& value)
+    {
+        const auto prefix = value + L" \x2014 ";
+        if (!value.empty() && label.starts_with(prefix))
+        {
+            return { value, label.substr(prefix.size()) };
+        }
+        if (!value.empty())
+        {
+            return { value, {} };
+        }
+        return { label, {} };
     }
 
     std::string jsonEscape(const std::string& value)
@@ -313,6 +381,11 @@ namespace
     void emitHostError(const std::string& code, const std::string& message)
     {
         emit("{\"type\":\"host-error\",\"code\":\"" + jsonEscape(code) + "\",\"message\":\"" + jsonEscape(message) + "\"}");
+    }
+
+    void emitAck(const std::string& requestId)
+    {
+        emit("{\"type\":\"ack\",\"requestId\":\"" + jsonEscape(requestId) + "\"}");
     }
 
     std::string hresultMessage(const winrt::hresult_error& error)
@@ -851,14 +924,260 @@ namespace
             }
         }
 
+        void hideSkillPicker()
+        {
+            skillPickerValues.clear();
+            skillActiveIndex = 0;
+            if (skillPickerItems)
+            {
+                skillPickerItems.Children().Clear();
+            }
+            if (skillPickerChrome)
+            {
+                skillPickerChrome.Visibility(Visibility::Collapsed);
+            }
+            else if (skillPicker)
+            {
+                skillPicker.Visibility(Visibility::Collapsed);
+            }
+        }
+
+        void paintSkillPicker()
+        {
+            if (!skillPickerItems)
+            {
+                return;
+            }
+            const auto count = skillPickerItems.Children().Size();
+            for (uint32_t index = 0; index < count; ++index)
+            {
+                const auto row = skillPickerItems.Children().GetAt(index).try_as<Border>();
+                if (!row)
+                {
+                    continue;
+                }
+                const auto active = static_cast<int32_t>(index) == skillActiveIndex;
+                row.Background(SolidColorBrush(active ? pickerRowActive : pickerRowIdle));
+                row.BorderThickness(Thickness{ 0.0 });
+                row.Opacity(1.0);
+                const auto stack = row.Child().try_as<StackPanel>();
+                if (!stack)
+                {
+                    continue;
+                }
+                const auto texts = stack.Children();
+                if (texts.Size() > 0)
+                {
+                    if (const auto name = texts.GetAt(0).try_as<TextBlock>())
+                    {
+                        name.Foreground(SolidColorBrush(pickerForeground));
+                    }
+                }
+                if (texts.Size() > 1)
+                {
+                    if (const auto description = texts.GetAt(1).try_as<TextBlock>())
+                    {
+                        description.Foreground(SolidColorBrush(pickerMuted));
+                    }
+                }
+            }
+        }
+
+        void keepComposerFocused()
+        {
+            if (!composer)
+            {
+                return;
+            }
+            composer.Focus(FocusState::Programmatic);
+        }
+
+        void refreshSkillPicker()
+        {
+            if (!skillPicker || !skillPickerItems || !composer)
+            {
+                return;
+            }
+            const auto query = slashQuery(composer.Text());
+            if (!query || skillChoices.empty())
+            {
+                hideSkillPicker();
+                return;
+            }
+            const auto needle = foldedWide(*query);
+            skillPickerItems.Children().Clear();
+            skillPickerValues.clear();
+            skillActiveIndex = 0;
+            for (const auto& [label, value] : skillChoices)
+            {
+                const auto wideLabel = utf8ToWide(label);
+                const auto wideValue = utf8ToWide(value);
+                if (!needle.empty() &&
+                    foldedWide(wideLabel).find(needle) == std::wstring::npos &&
+                    foldedWide(wideValue).find(needle) == std::wstring::npos)
+                {
+                    continue;
+                }
+                const auto index = static_cast<int32_t>(skillPickerValues.size());
+                const auto [name, description] = splitSkillLabel(wideLabel, wideValue);
+                auto row = Border{};
+                row.Padding(Thickness{ 10.0, 7.0, 10.0, 7.0 });
+                row.Margin(Thickness{ 0.0, 0.0, 0.0, 2.0 });
+                row.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 6.0 });
+                row.HorizontalAlignment(HorizontalAlignment::Stretch);
+                row.AllowFocusOnInteraction(false);
+                auto content = StackPanel{};
+                content.Spacing(2.0);
+                auto nameText = TextBlock{};
+                nameText.Text(winrt::hstring(name));
+                nameText.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(winrt::hstring(L"Cascadia Mono")));
+                nameText.FontSize(13.0);
+                nameText.TextWrapping(winrt::Windows::UI::Xaml::TextWrapping::NoWrap);
+                nameText.TextTrimming(winrt::Windows::UI::Xaml::TextTrimming::CharacterEllipsis);
+                nameText.IsHitTestVisible(false);
+                content.Children().Append(nameText);
+                if (!description.empty())
+                {
+                    auto descriptionText = TextBlock{};
+                    descriptionText.Text(winrt::hstring(description));
+                    descriptionText.FontSize(11.0);
+                    descriptionText.TextWrapping(winrt::Windows::UI::Xaml::TextWrapping::NoWrap);
+                    descriptionText.TextTrimming(winrt::Windows::UI::Xaml::TextTrimming::CharacterEllipsis);
+                    descriptionText.IsHitTestVisible(false);
+                    content.Children().Append(descriptionText);
+                }
+                row.Child(content);
+                row.PointerEntered([this, index](const auto&, const auto&) {
+                    skillActiveIndex = index;
+                    paintSkillPicker();
+                });
+                row.PointerPressed([this, choice = winrt::hstring(wideValue)](const auto&, const PointerRoutedEventArgs& args) {
+                    args.Handled(true);
+                    applySkillChoice(choice);
+                });
+                skillPickerItems.Children().Append(row);
+                skillPickerValues.emplace_back(wideValue);
+                if (skillPickerValues.size() >= 30)
+                {
+                    break;
+                }
+            }
+            if (skillPickerValues.empty())
+            {
+                hideSkillPicker();
+                keepComposerFocused();
+                return;
+            }
+            if (skillPickerChrome)
+            {
+                skillPickerChrome.Visibility(Visibility::Visible);
+            }
+            if (skillPicker)
+            {
+                skillPicker.Visibility(Visibility::Visible);
+            }
+            paintSkillPicker();
+            keepComposerFocused();
+        }
+
+        void applySkillChoice(const winrt::hstring& value)
+        {
+            if (!composer || value.empty())
+            {
+                return;
+            }
+            composer.Text(value + winrt::hstring(L" "));
+            keepComposerFocused();
+            composer.Select(composer.Text().size(), 0);
+            hideSkillPicker();
+        }
+
+        bool applySelectedSkill()
+        {
+            if (skillPickerValues.empty())
+            {
+                return false;
+            }
+            auto index = skillActiveIndex;
+            if (index < 0 || index >= static_cast<int32_t>(skillPickerValues.size()))
+            {
+                index = 0;
+            }
+            applySkillChoice(skillPickerValues[static_cast<size_t>(index)]);
+            return true;
+        }
+
+        void moveSkillSelection(int delta)
+        {
+            if (skillPickerValues.empty())
+            {
+                return;
+            }
+            const auto last = static_cast<int32_t>(skillPickerValues.size()) - 1;
+            if (skillActiveIndex < 0)
+            {
+                skillActiveIndex = delta > 0 ? 0 : last;
+            }
+            else
+            {
+                skillActiveIndex = std::clamp(skillActiveIndex + delta, 0, last);
+            }
+            paintSkillPicker();
+            if (skillPickerItems && skillActiveIndex >= 0 &&
+                skillActiveIndex < static_cast<int32_t>(skillPickerItems.Children().Size()))
+            {
+                const auto row = skillPickerItems.Children().GetAt(static_cast<uint32_t>(skillActiveIndex)).try_as<Border>();
+                if (row)
+                {
+                    row.StartBringIntoView();
+                }
+            }
+            keepComposerFocused();
+        }
+
         void installComposerHandlers()
         {
             const auto enterDown = std::make_shared<std::atomic_bool>(false);
             composerKeyDown = composer.KeyDown(
-                [connection = terminalConnection, sessionId = id, enterDown](
+                [this, connection = terminalConnection, sessionId = id, enterDown](
                     const winrt::Windows::Foundation::IInspectable& sender,
                     const KeyRoutedEventArgs& args) {
-                    if (args.OriginalKey() != VirtualKey::Enter)
+                    const auto key = args.OriginalKey();
+                    if (skillPicker && skillPicker.Visibility() == Visibility::Visible)
+                    {
+                        if (key == VirtualKey::Down)
+                        {
+                            args.Handled(true);
+                            moveSkillSelection(1);
+                            return;
+                        }
+                        if (key == VirtualKey::Up)
+                        {
+                            args.Handled(true);
+                            moveSkillSelection(-1);
+                            return;
+                        }
+                        if (key == VirtualKey::Escape)
+                        {
+                            args.Handled(true);
+                            hideSkillPicker();
+                            return;
+                        }
+                        if (key == VirtualKey::Tab || key == VirtualKey::Enter)
+                        {
+                            if (applySelectedSkill())
+                            {
+                                args.Handled(true);
+                                return;
+                            }
+                            if (key == VirtualKey::Tab)
+                            {
+                                args.Handled(true);
+                                return;
+                            }
+                        }
+                    }
+                    if (key != VirtualKey::Enter)
                     {
                         return;
                     }
@@ -962,27 +1281,8 @@ namespace
             bindChoice(dockControls.model, modelSelectionChanged, "model");
             bindChoice(dockControls.thinking, thinkingSelectionChanged, "thinking");
             composerTextChanged = composer.TextChanged(
-                [this](const winrt::Windows::Foundation::IInspectable& sender, const TextChangedEventArgs&) {
-                    const auto input = sender.as<TextBox>();
-                    if (input.Text() != L"/" || skillChoices.empty())
-                    {
-                        return;
-                    }
-                    auto flyout = MenuFlyout{};
-                    const auto count = std::min<size_t>(skillChoices.size(), 30);
-                    for (size_t index = 0; index < count; ++index)
-                    {
-                        const auto& [label, value] = skillChoices[index];
-                        auto item = MenuFlyoutItem{};
-                        item.Text(winrt::hstring(utf8ToWide(label)));
-                        item.Click([input, value](const auto&, const auto&) {
-                            input.Text(winrt::hstring(utf8ToWide(value + " ")));
-                            input.Focus(FocusState::Programmatic);
-                            input.Select(input.Text().size(), 0);
-                        });
-                        flyout.Items().Append(item);
-                    }
-                    flyout.ShowAt(input);
+                [this](const winrt::Windows::Foundation::IInspectable&, const TextChangedEventArgs&) {
+                    refreshSkillPicker();
                 });
         }
 
@@ -990,12 +1290,12 @@ namespace
         {
             updatingDock = true;
             setChoiceItems(dockControls.cwd, namedString(state, L"cwdLabel", false), state, L"cwdChoices", true);
-            setChoiceItems(
-                dockControls.worktree,
-                namedString(state, L"worktreeLabel", false),
-                state,
-                L"worktreeChoices",
-                false);
+            const auto worktreeLabel = namedString(state, L"worktreeLabel", false);
+            setChoiceItems(dockControls.worktree, worktreeLabel, state, L"worktreeChoices", false);
+            const auto worktreeChoiceCount =
+                state.HasKey(L"worktreeChoices") ? state.GetNamedArray(L"worktreeChoices").Size() : 0;
+            dockControls.worktree.Visibility(
+                worktreeLabel.empty() && worktreeChoiceCount == 0 ? Visibility::Collapsed : Visibility::Visible);
             setChoiceItems(dockControls.model, namedString(state, L"modelLabel", false), state, L"modelChoices", false);
             setChoiceItems(
                 dockControls.thinking,
@@ -1017,6 +1317,7 @@ namespace
                 }
             }
             updatingDock = false;
+            refreshSkillPicker();
         }
 
         void applyTheme(bool dark)
@@ -1036,6 +1337,33 @@ namespace
             composer.Background(SolidColorBrush(inputBackground));
             composer.BorderBrush(SolidColorBrush(border));
             composer.Foreground(SolidColorBrush(foreground));
+            pickerRowIdle = inputBackground;
+            pickerRowActive = dark ? Color{ 0xff, 0x2c, 0x2c, 0x30 } : Color{ 0xff, 0xeb, 0xeb, 0xee };
+            pickerForeground = foreground;
+            pickerMuted = muted;
+            if (skillPickerChrome)
+            {
+                skillPickerChrome.Background(SolidColorBrush(inputBackground));
+                skillPickerChrome.BorderBrush(SolidColorBrush(border));
+            }
+            if (skillPickerHeaderBar)
+            {
+                skillPickerHeaderBar.BorderBrush(SolidColorBrush(border));
+            }
+            if (skillPicker)
+            {
+                skillPicker.Background(SolidColorBrush(inputBackground));
+                skillPicker.BorderThickness(Thickness{ 0.0 });
+            }
+            if (skillPickerHeaderTitle)
+            {
+                skillPickerHeaderTitle.Foreground(SolidColorBrush(muted));
+            }
+            if (skillPickerHeaderHint)
+            {
+                skillPickerHeaderHint.Foreground(SolidColorBrush(muted));
+            }
+            paintSkillPicker();
             dockControls.capsule.Background(SolidColorBrush(barBackground));
             dockControls.capsule.BorderBrush(SolidColorBrush(border));
             dockControls.usage.Foreground(SolidColorBrush(muted));
@@ -1058,20 +1386,30 @@ namespace
             bool addBrowse)
         {
             combo.Items().Clear();
-            auto current = ComboBoxItem{};
-            current.Content(winrt::box_value(winrt::hstring(utf8ToWide(currentLabel))));
-            current.Tag(winrt::box_value(winrt::hstring{}));
-            combo.Items().Append(current);
+            int32_t selectedIndex = -1;
             if (state.HasKey(choicesKey))
             {
                 for (const auto& value : state.GetNamedArray(choicesKey))
                 {
                     const auto choice = value.GetObject();
+                    const auto label = namedString(choice, L"label", false);
                     auto item = ComboBoxItem{};
-                    item.Content(winrt::box_value(winrt::hstring(utf8ToWide(namedString(choice, L"label", false)))));
+                    item.Content(winrt::box_value(winrt::hstring(utf8ToWide(label))));
                     item.Tag(winrt::box_value(winrt::hstring(utf8ToWide(namedString(choice, L"value", false)))));
                     combo.Items().Append(item);
+                    if (selectedIndex < 0 && !currentLabel.empty() && label == currentLabel)
+                    {
+                        selectedIndex = static_cast<int32_t>(combo.Items().Size() - 1);
+                    }
                 }
+            }
+            if (selectedIndex < 0 && !currentLabel.empty())
+            {
+                auto current = ComboBoxItem{};
+                current.Content(winrt::box_value(winrt::hstring(utf8ToWide(currentLabel))));
+                current.Tag(winrt::box_value(winrt::hstring{}));
+                combo.Items().InsertAt(0, current);
+                selectedIndex = 0;
             }
             if (addBrowse)
             {
@@ -1080,7 +1418,10 @@ namespace
                 browse.Tag(winrt::box_value(winrt::hstring(L"__browse__")));
                 combo.Items().Append(browse);
             }
-            combo.SelectedIndex(0);
+            if (selectedIndex >= 0)
+            {
+                combo.SelectedIndex(selectedIndex);
+            }
         }
 
     public:
@@ -1099,6 +1440,18 @@ namespace
         TextBlock deadText{ nullptr };
         Border composerCard{ nullptr };
         TextBox composer{ nullptr };
+        Border skillPickerChrome{ nullptr };
+        Border skillPickerHeaderBar{ nullptr };
+        TextBlock skillPickerHeaderTitle{ nullptr };
+        TextBlock skillPickerHeaderHint{ nullptr };
+        ScrollViewer skillPicker{ nullptr };
+        StackPanel skillPickerItems{ nullptr };
+        std::vector<winrt::hstring> skillPickerValues;
+        int32_t skillActiveIndex = 0;
+        Color pickerRowIdle{};
+        Color pickerRowActive{};
+        Color pickerForeground{};
+        Color pickerMuted{};
         DockControls dockControls;
         winrt::event_token stateChanged{};
         winrt::event_token restartRequested{};
@@ -1153,6 +1506,7 @@ namespace
                 {
                     _dispatcherController = createCurrentDispatcherQueueController();
                 }
+                _parkingWindow = createSessionHostWindow();
             }
             catch (const winrt::hresult_error& error)
             {
@@ -1163,6 +1517,11 @@ namespace
         ~Host()
         {
             _sessions.clear();
+            if (_parkingWindow)
+            {
+                DestroyWindow(_parkingWindow);
+                _parkingWindow = nullptr;
+            }
             _dispatcherController = nullptr;
             if (_xamlApplication)
             {
@@ -1189,6 +1548,9 @@ namespace
                 " cwd=" + request.cwd);
             if (find(request.sessionId))
             {
+                const auto session = find(request.sessionId);
+                attachSessionHostWindow(session->host, parentHandle);
+                session->browserParent = parentHandle;
                 focus(request.sessionId);
                 return;
             }
@@ -1218,7 +1580,7 @@ namespace
                 throw withHresultContext("get_WindowHandle", error);
             }
             ShowWindow(islandWindow, SW_HIDE);
-            attachSessionHostWindow(hostWindow, findElectronContentWindow(parentHandle));
+            attachSessionHostWindow(hostWindow, parentHandle);
 
             auto settingsImpl = winrt::make_self<HostControlSettings>();
             auto settings = settingsImpl.as<IControlSettings>();
@@ -1281,40 +1643,99 @@ namespace
             composer.FontSize(14.0);
             composer.Padding(Thickness{ 12.0, 8.0, 12.0, 8.0 });
 
-            const auto createDockCombo = [](double width) {
+            auto skillPickerItems = StackPanel{};
+            skillPickerItems.HorizontalAlignment(HorizontalAlignment::Stretch);
+            auto skillPicker = ScrollViewer{};
+            skillPicker.MaxHeight(240.0);
+            skillPicker.AllowFocusOnInteraction(false);
+            skillPicker.IsTabStop(false);
+            skillPicker.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+            skillPicker.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+            skillPicker.Content(skillPickerItems);
+
+            auto skillPickerHeaderTitle = TextBlock{};
+            skillPickerHeaderTitle.Text(winrt::hstring(L"Skills"));
+            skillPickerHeaderTitle.FontSize(11.0);
+            skillPickerHeaderTitle.VerticalAlignment(VerticalAlignment::Center);
+            auto skillPickerHeaderHint = TextBlock{};
+            skillPickerHeaderHint.Text(winrt::hstring(L"Tab / Enter"));
+            skillPickerHeaderHint.FontSize(11.0);
+            skillPickerHeaderHint.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(winrt::hstring(L"Cascadia Mono")));
+            skillPickerHeaderHint.VerticalAlignment(VerticalAlignment::Center);
+            auto headerRow = Grid{};
+            auto headerMain = ColumnDefinition{};
+            headerMain.Width(GridLength{ 1.0, GridUnitType::Star });
+            auto headerHint = ColumnDefinition{};
+            headerHint.Width(GridLength{ 1.0, GridUnitType::Auto });
+            headerRow.ColumnDefinitions().Append(headerMain);
+            headerRow.ColumnDefinitions().Append(headerHint);
+            Grid::SetColumn(skillPickerHeaderHint, 1);
+            headerRow.Children().Append(skillPickerHeaderTitle);
+            headerRow.Children().Append(skillPickerHeaderHint);
+            auto headerBar = Border{};
+            headerBar.Padding(Thickness{ 10.0, 6.0, 10.0, 8.0 });
+            headerBar.BorderThickness(Thickness{ 0.0, 0.0, 0.0, 1.0 });
+            headerBar.Child(headerRow);
+            headerBar.AllowFocusOnInteraction(false);
+
+            auto chromeStack = StackPanel{};
+            chromeStack.Children().Append(headerBar);
+            chromeStack.Children().Append(skillPicker);
+            auto skillPickerChrome = Border{};
+            skillPickerChrome.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 8.0 });
+            skillPickerChrome.BorderThickness(Thickness{ 1.0 });
+            skillPickerChrome.Padding(Thickness{ 4.0, 2.0, 4.0, 4.0 });
+            skillPickerChrome.Visibility(Visibility::Collapsed);
+            skillPickerChrome.AllowFocusOnInteraction(false);
+            skillPickerChrome.Child(chromeStack);
+
+            const auto createDockCombo = [](double minWidth) {
                 auto combo = ComboBox{};
-                combo.MinWidth(width);
+                combo.MinWidth(minWidth);
                 combo.Height(28.0);
                 combo.MaxDropDownHeight(420.0);
                 combo.FontSize(12.0);
+                combo.Margin(Thickness{ 0.0, 0.0, 8.0, 0.0 });
+                combo.VerticalAlignment(VerticalAlignment::Center);
                 return combo;
             };
-            auto cwdCombo = createDockCombo(120.0);
+            auto cwdCombo = createDockCombo(96.0);
             cwdCombo.PlaceholderText(winrt::hstring(L"Folder"));
-            auto worktreeCombo = createDockCombo(110.0);
+            auto worktreeCombo = createDockCombo(140.0);
             worktreeCombo.PlaceholderText(winrt::hstring(L"Worktree"));
-            auto modelCombo = createDockCombo(140.0);
+            auto modelCombo = createDockCombo(128.0);
             modelCombo.PlaceholderText(winrt::hstring(L"Model"));
-            auto thinkingCombo = createDockCombo(90.0);
+            auto thinkingCombo = createDockCombo(88.0);
             thinkingCombo.PlaceholderText(winrt::hstring(L"Thinking"));
             auto usageText = TextBlock{};
             usageText.Text(winrt::hstring(L"Usage —"));
             usageText.VerticalAlignment(VerticalAlignment::Center);
-            usageText.Margin(Thickness{ 4.0, 0.0, 8.0, 0.0 });
+            usageText.Margin(Thickness{ 0.0, 0.0, 8.0, 0.0 });
             usageText.FontSize(12.0);
-            usageText.MinWidth(72.0);
-            usageText.TextWrapping(winrt::Windows::UI::Xaml::TextWrapping::NoWrap);
+            usageText.TextWrapping(winrt::Windows::UI::Xaml::TextWrapping::Wrap);
             auto mcpText = TextBlock{};
             mcpText.Text(winrt::hstring(L"MCP"));
             mcpText.VerticalAlignment(VerticalAlignment::Center);
-            mcpText.Margin(Thickness{ 4.0, 0.0, 8.0, 0.0 });
             mcpText.FontSize(12.0);
 
-            auto dockRow = VariableSizedWrapGrid{};
-            dockRow.Orientation(Orientation::Horizontal);
-            dockRow.MaximumRowsOrColumns(8);
-            dockRow.ItemHeight(32.0);
-            dockRow.HorizontalAlignment(HorizontalAlignment::Left);
+            auto dockRow = Grid{};
+            const auto addColumn = [&dockRow](GridUnitType type) {
+                auto column = ColumnDefinition{};
+                column.Width(GridLength{ 1.0, type });
+                dockRow.ColumnDefinitions().Append(column);
+            };
+            addColumn(GridUnitType::Auto);
+            addColumn(GridUnitType::Auto);
+            addColumn(GridUnitType::Star);
+            addColumn(GridUnitType::Auto);
+            addColumn(GridUnitType::Auto);
+            addColumn(GridUnitType::Auto);
+            Grid::SetColumn(cwdCombo, 0);
+            Grid::SetColumn(worktreeCombo, 1);
+            Grid::SetColumn(usageText, 2);
+            Grid::SetColumn(modelCombo, 3);
+            Grid::SetColumn(thinkingCombo, 4);
+            Grid::SetColumn(mcpText, 5);
             dockRow.Children().Append(cwdCombo);
             dockRow.Children().Append(worktreeCombo);
             dockRow.Children().Append(usageText);
@@ -1332,6 +1753,7 @@ namespace
             auto composerStack = StackPanel{};
             composerStack.Orientation(Orientation::Vertical);
             composerStack.Spacing(8.0);
+            composerStack.Children().Append(skillPickerChrome);
             composerStack.Children().Append(composer);
             composerStack.Children().Append(dockCapsule);
             composerCard.Child(composerStack);
@@ -1378,6 +1800,12 @@ namespace
                     modelCombo,
                     thinkingCombo,
                     mcpText });
+            session->skillPickerChrome = skillPickerChrome;
+            session->skillPickerHeaderBar = headerBar;
+            session->skillPickerHeaderTitle = skillPickerHeaderTitle;
+            session->skillPickerHeaderHint = skillPickerHeaderHint;
+            session->skillPicker = skillPicker;
+            session->skillPickerItems = skillPickerItems;
             session->applyTheme(_darkTheme);
             session->installComposerHandlers();
             session->installClipboardHandlers();
@@ -1414,6 +1842,32 @@ namespace
             SetFocus(session->island);
             session->termControl.Focus(FocusState::Programmatic);
             BringWindowToTop(session->host);
+        }
+
+        void attach(const std::string& encodedParentHandle)
+        {
+            const auto parentHandle = parseParentWindowHandle(encodedParentHandle);
+            if (!parentHandle || !IsWindow(parentHandle))
+            {
+                throw std::runtime_error("parentWindowHandle is not a live HWND");
+            }
+            for (const auto& [sessionId, session] : _sessions)
+            {
+                attachSessionHostWindow(session->host, parentHandle);
+                session->browserParent = parentHandle;
+                ShowWindow(session->host, SW_HIDE);
+            }
+            emitDiagnostic("command=attach sessions=" + std::to_string(_sessions.size()));
+        }
+
+        void detach()
+        {
+            for (const auto& [sessionId, session] : _sessions)
+            {
+                detachSessionHostWindow(session->host, _parkingWindow);
+                session->browserParent = nullptr;
+            }
+            emitDiagnostic("command=detach sessions=" + std::to_string(_sessions.size()));
         }
 
         void write(const std::string& sessionId, const std::string& data)
@@ -1455,21 +1909,28 @@ namespace
             {
                 return;
             }
-            const auto contentWindow =
-                session->browserParent ? findElectronContentWindow(session->browserParent) : GetParent(session->host);
-            if (contentWindow && GetParent(session->host) != contentWindow)
+            const auto parentWindow = session->browserParent ? session->browserParent : GetParent(session->host);
+            if (parentWindow && GetParent(session->host) != parentWindow)
             {
                 SetLastError(ERROR_SUCCESS);
-                if (!SetParent(session->host, contentWindow) && GetLastError() != ERROR_SUCCESS)
+                if (!SetParent(session->host, parentWindow) && GetLastError() != ERROR_SUCCESS)
                 {
-                    throw std::runtime_error("failed to attach session host window to Electron content HWND");
+                    throw std::runtime_error("failed to attach session host window to Electron browser HWND");
                 }
             }
+            const auto contentOrigin = session->browserParent ? electronContentOrigin(session->browserParent) : POINT{};
             for (const auto& [candidateId, candidate] : _sessions)
             {
                 ShowWindow(candidate->host, candidateId == session->id ? SW_SHOW : SW_HIDE);
             }
-            SetWindowPos(session->host, HWND_TOP, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+            SetWindowPos(
+                session->host,
+                HWND_TOP,
+                x + contentOrigin.x,
+                y + contentOrigin.y,
+                width,
+                height,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE);
             SetWindowPos(session->island, nullptr, 0, 0, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
         }
 
@@ -1682,6 +2143,7 @@ namespace
         XamlApplication _xamlApplication{ nullptr };
         DispatcherQueueController _dispatcherController{ nullptr };
         std::unordered_map<std::string, std::shared_ptr<Session>> _sessions;
+        HWND _parkingWindow = nullptr;
         bool _darkTheme = true;
     };
 
@@ -1713,16 +2175,31 @@ namespace
         return executableDirectory();
     }
 
+    bool isInvalidParentWindowFailure(const winrt::hstring& type)
+    {
+        return type == L"attach" || type == L"bounds";
+    }
+
     void enqueueCommand(const DispatcherQueue& dispatcher, std::string line, Host& host)
     {
         dispatcher.TryEnqueue([line = std::move(line), &host]() {
+            winrt::hstring type;
             try
             {
                 const auto command = winrt::Windows::Data::Json::JsonObject::Parse(winrt::hstring(utf8ToWide(line)));
-                const auto type = command.GetNamedString(L"type", L"");
+                type = command.GetNamedString(L"type", L"");
                 if (type == L"mount")
                 {
                     host.mount(command.GetNamedObject(L"request"));
+                }
+                else if (type == L"attach")
+                {
+                    host.attach(namedString(command, L"parentWindowHandle"));
+                }
+                else if (type == L"detach")
+                {
+                    host.detach();
+                    emitAck(namedString(command, L"requestId"));
                 }
                 else if (type == L"focus")
                 {
@@ -1771,11 +2248,15 @@ namespace
             }
             catch (const winrt::hresult_error& error)
             {
-                emitHostError("HOST_UNAVAILABLE", hresultMessage(error));
+                emitHostError(
+                    isInvalidParentWindowFailure(type) ? "INVALID_PARENT_WINDOW" : "HOST_UNAVAILABLE",
+                    hresultMessage(error));
             }
             catch (const std::exception& error)
             {
-                emitHostError("HOST_PROTOCOL_ERROR", error.what());
+                emitHostError(
+                    isInvalidParentWindowFailure(type) ? "INVALID_PARENT_WINDOW" : "HOST_PROTOCOL_ERROR",
+                    error.what());
             }
         });
     }
