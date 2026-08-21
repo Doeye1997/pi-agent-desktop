@@ -46,6 +46,11 @@ test("native host mounts an IME TextBox overlay and submits one complete line", 
   assert.match(hostSource, /auto root = Grid\{\};[\s\S]*root\.Children\(\)\.Append\(control\)/);
   assert.match(hostSource, /auto composer = TextBox\{\}/);
   assert.match(hostSource, /composerCard\.VerticalAlignment\(VerticalAlignment::Bottom\)/);
+  assert.match(hostSource, /composerCard\.Margin\(Thickness\{ 0\.0, 0\.0, 0\.0, 0\.0 \}\)/);
+  assert.match(hostSource, /composerCard\.CornerRadius\(winrt::Windows::UI::Xaml::CornerRadius\{ 0\.0, 0\.0, 0\.0, 0\.0 \}\)/);
+  assert.match(hostSource, /composer\.Height\(52\.0\)/);
+  assert.match(hostSource, /VariableSizedWrapGrid/);
+  assert.match(hostSource, /Chrome_RenderWidgetHostHWND/);
   assert.match(hostSource, /args\.Handled\(true\)/);
   assert.match(hostSource, /payload\.push_back\(u'\\r'\)/);
 

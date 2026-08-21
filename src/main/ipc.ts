@@ -29,6 +29,7 @@ import {
   createSessionDisplayManager,
   type SessionDisplayManager,
 } from "./fork/session-display";
+import { createTuiRunningReporterChannel } from "./fork/tui-running-protocol";
 import type { SessionDisplayAction, SessionDisplayDockState } from "../shared/session-display";
 import { isTrustedDesktopIpcSender } from "./ipc-trust";
 import type {
@@ -217,9 +218,18 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
     const handle = win.getNativeWindowHandle();
     return handle.length > 0 ? handle.toString("base64") : null;
   };
+  const tuiRunning = createTuiRunningReporterChannel({
+    onRunning(sessionId, running) {
+      getHostManager()?.setCockpitRunning(sessionId, running);
+    },
+  });
   const sessionDisplayManager = createSessionDisplayManager({
     getParentWindowHandle,
-    onMark() {
+    onMark(sessionId, mark) {
+      if (mark === "dead") {
+        tuiRunning.clear(sessionId);
+        getHostManager()?.setCockpitRunning(sessionId, false);
+      }
       emitSessionDisplayMarks();
     },
     onError(error) {
@@ -237,7 +247,12 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
   const startSelectedSessionDisplay = createLatestSessionDisplayStarter({
     resolveNodeExecutable,
     program: bundledPiCliPath,
-    start: (session, remount) => sessionDisplayManager.start(session, undefined, remount),
+    start: (session, remount) =>
+      sessionDisplayManager.start(
+        { ...session, program: tuiRunning.wrapProgram(session.program, session.sessionId) },
+        undefined,
+        remount,
+      ),
     onError(selected, error) {
       const message = error instanceof Error ? error.message : String(error);
       emitSessionDisplayError({

@@ -3,6 +3,7 @@ import type {
   SessionDisplayChoice,
   SessionDisplayDockState,
 } from "../../shared/session-display";
+import { forkUsageChips } from "./usage.ts";
 
 type DockSession = {
   id: string;
@@ -57,7 +58,12 @@ function formatTokens(tokens: number): string {
   return `${Number((tokens / 1_000_000).toFixed(1))}m`;
 }
 
-function contextUsageLabel(context?: DockContext): string {
+function contextUsageLabel(
+  context?: DockContext,
+  statuses?: Array<{ key: string; text: string }>,
+): string {
+  const chips = forkUsageChips(statuses ?? []);
+  if (chips.length > 0) return chips.map((chip) => chip.text.trim()).join(" · ");
   const message = context?.messages.findLast((candidate) => candidate.role === "assistant" && candidate.usage);
   if (!message?.usage) return "Usage —";
   const tokens =
@@ -86,7 +92,7 @@ export function buildSessionDisplayDockState(sources: SessionDisplayDockSources)
   return {
     cwdLabel: pathLabel(sources.session.cwd),
     worktreeLabel: sources.session.worktreeBranch || "Worktree",
-    usageLabel: contextUsageLabel(sources.context),
+    usageLabel: contextUsageLabel(sources.context, sources.statuses),
     modelLabel: currentModelInfo?.name || currentModel?.modelId || "Model",
     thinkingLabel: titleCase(sources.context?.thinkingLevel || "auto"),
     mcpLabel: mcpStatus?.text.trim() || "MCP",

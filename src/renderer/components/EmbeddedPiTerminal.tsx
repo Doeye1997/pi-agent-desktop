@@ -133,7 +133,7 @@ export function EmbeddedPiTerminal({
       .catch(() => undefined);
 
     const refreshContext = () => {
-      void getSession(session.id, true, undefined, { maxTurns: 1, maxBytes: 64 * 1024 })
+      void getSession(session.id, true, undefined, { maxTurns: 8, maxBytes: 256 * 1024 })
         .then((result) => {
           if (!active) return;
           sources.context = result.context;

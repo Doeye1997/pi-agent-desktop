@@ -6,6 +6,8 @@ import test from "node:test";
 const source = readFileSync(path.join(import.meta.dirname, "ipc.ts"), "utf8");
 
 test("PTY-alive display marks do not union into sidebar runningSessionIds", () => {
-  assert.match(source, /onMark\([^)]*\) \{\s*emitSessionDisplayMarks\(\);/);
-  assert.equal(source.includes("setCockpitRunning"), false);
+  assert.doesNotMatch(source, /setCockpitRunning\(sessionId, mark === "running"\)/);
+  assert.match(source, /onRunning\(sessionId, running\) \{\s*getHostManager\(\)\?\.setCockpitRunning\(sessionId, running\)/);
+  assert.match(source, /if \(mark === "dead"\) \{[\s\S]*setCockpitRunning\(sessionId, false\)/);
+  assert.match(source, /tuiRunning\.wrapProgram\(session\.program, session\.sessionId\)/);
 });

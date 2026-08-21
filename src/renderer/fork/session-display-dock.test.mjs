@@ -38,12 +38,15 @@ test("dock state projects session facts and picker choices without reading termi
       ],
     },
     skills: [{ name: "review", description: "Review current changes" }],
-    statuses: [{ key: "mcp", text: "MCP: 2 connected" }],
+    statuses: [
+      { key: "mcp", text: "MCP: 2 connected" },
+      { key: "pi-grok-usage", text: "SuperGrok 98%" },
+    ],
   });
 
   assert.equal(state.cwdLabel, "feature");
   assert.equal(state.worktreeLabel, "feature/native-dock");
-  assert.equal(state.usageLabel, "Context 3.5k");
+  assert.equal(state.usageLabel, "SuperGrok 98%");
   assert.equal(state.modelLabel, "Claude Sonnet");
   assert.equal(state.thinkingLabel, "High");
   assert.equal(state.mcpLabel, "MCP: 2 connected");
@@ -54,6 +57,19 @@ test("dock state projects session facts and picker choices without reading termi
   assert.deepEqual(state.worktreeChoices.map(({ label }) => label), ["main", "feature/native-dock"]);
   assert.deepEqual(state.thinkingChoices.map(({ value }) => value), ["off", "medium", "high"]);
   assert.deepEqual(state.skillChoices, [{ label: "/review — Review current changes", value: "/review" }]);
+});
+
+test("dock usage falls back to context tokens when no usage chip exists", () => {
+  const state = buildSessionDisplayDockState({
+    session: { id: "sess-2", cwd: "F:/repo" },
+    context: {
+      model: null,
+      thinkingLevel: "auto",
+      messages: [{ role: "assistant", usage: { input: 1200, output: 300 } }],
+    },
+    statuses: [{ key: "mcp", text: "MCP" }],
+  });
+  assert.equal(state.usageLabel, "Context 1.5k");
 });
 
 test("dock actions use Pi commands and key input on the existing TermControl connection", () => {

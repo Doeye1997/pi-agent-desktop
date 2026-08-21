@@ -68,6 +68,7 @@ using winrt::Windows::UI::Xaml::Controls::Border;
 using winrt::Windows::UI::Xaml::Controls::ComboBox;
 using winrt::Windows::UI::Xaml::Controls::ComboBoxItem;
 using winrt::Windows::UI::Xaml::Controls::Grid;
+using winrt::Windows::UI::Xaml::Controls::VariableSizedWrapGrid;
 using winrt::Windows::UI::Xaml::Controls::MenuFlyout;
 using winrt::Windows::UI::Xaml::Controls::MenuFlyoutItem;
 using winrt::Windows::UI::Xaml::Controls::Orientation;
@@ -162,6 +163,37 @@ namespace
             throw std::runtime_error("failed to create session host window");
         }
         return window;
+    }
+
+    HWND findDescendantWindowByClass(HWND root, const wchar_t* className)
+    {
+        HWND child = nullptr;
+        while ((child = FindWindowExW(root, child, nullptr, nullptr)) != nullptr)
+        {
+            wchar_t name[256]{};
+            if (GetClassNameW(child, name, 256) > 0 && wcscmp(name, className) == 0)
+            {
+                return child;
+            }
+            if (const HWND nested = findDescendantWindowByClass(child, className))
+            {
+                return nested;
+            }
+        }
+        return nullptr;
+    }
+
+    HWND findElectronContentWindow(HWND browserWindow)
+    {
+        if (const HWND render = findDescendantWindowByClass(browserWindow, L"Chrome_RenderWidgetHostHWND"))
+        {
+            return render;
+        }
+        if (const HWND widget = findDescendantWindowByClass(browserWindow, L"Chrome_WidgetWin_1"))
+        {
+            return widget;
+        }
+        return browserWindow;
     }
 
     void attachSessionHostWindow(HWND window, HWND parentHandle)
@@ -697,6 +729,7 @@ namespace
                 DesktopWindowXamlSource source,
                 HWND hostWindow,
                 HWND islandWindow,
+                HWND browserWindow,
                 winrt::com_ptr<HostControlSettings> settings,
                 TermControl control,
                 ITerminalConnection connection,
@@ -711,6 +744,7 @@ namespace
             xamlSource(std::move(source)),
             host(std::move(hostWindow)),
             island(std::move(islandWindow)),
+            browserParent(browserWindow),
             settingsImpl(std::move(settings)),
             termControl(std::move(control)),
             terminalConnection(std::move(connection)),
@@ -988,23 +1022,24 @@ namespace
         void applyTheme(bool dark)
         {
             const auto background = dark ? Color{ 0xff, 0x0b, 0x0d, 0x10 } : Color{ 0xff, 0xf5, 0xf7, 0xfa };
-            const auto cardBackground = dark ? Color{ 0xf2, 0x1d, 0x23, 0x2c } : Color{ 0xf2, 0xff, 0xff, 0xff };
-            const auto inputBackground = dark ? Color{ 0xff, 0x12, 0x16, 0x1c } : Color{ 0xff, 0xff, 0xff, 0xff };
-            const auto foreground = dark ? Color{ 0xff, 0xf4, 0xf7, 0xfb } : Color{ 0xff, 0x1b, 0x1f, 0x24 };
-            const auto border = dark ? Color{ 0xff, 0x3b, 0x45, 0x53 } : Color{ 0xff, 0xd2, 0xd8, 0xe0 };
+            const auto barBackground = dark ? Color{ 0xff, 0x1c, 0x1c, 0x1f } : Color{ 0xff, 0xf7, 0xf7, 0xf8 };
+            const auto inputBackground = dark ? Color{ 0xff, 0x14, 0x14, 0x15 } : Color{ 0xff, 0xff, 0xff, 0xff };
+            const auto foreground = dark ? Color{ 0xff, 0xec, 0xec, 0xec } : Color{ 0xff, 0x1a, 0x1a, 0x1a };
+            const auto muted = dark ? Color{ 0xff, 0xa0, 0xa0, 0xa6 } : Color{ 0xff, 0x6b, 0x6b, 0x70 };
+            const auto border = dark ? Color{ 0xff, 0x2e, 0x2e, 0x30 } : Color{ 0xff, 0xe6, 0xe6, 0xe6 };
 
             rootGrid.RequestedTheme(dark ? ElementTheme::Dark : ElementTheme::Light);
             rootGrid.Background(SolidColorBrush(background));
-            composerCard.Background(SolidColorBrush(cardBackground));
+            composerCard.Background(SolidColorBrush(barBackground));
             composerCard.BorderBrush(SolidColorBrush(border));
-            composerCard.BorderThickness(Thickness{ 1.0, 1.0, 1.0, 1.0 });
+            composerCard.BorderThickness(Thickness{ 0.0, 1.0, 0.0, 0.0 });
             composer.Background(SolidColorBrush(inputBackground));
             composer.BorderBrush(SolidColorBrush(border));
             composer.Foreground(SolidColorBrush(foreground));
-            dockControls.capsule.Background(SolidColorBrush(inputBackground));
+            dockControls.capsule.Background(SolidColorBrush(barBackground));
             dockControls.capsule.BorderBrush(SolidColorBrush(border));
-            dockControls.usage.Foreground(SolidColorBrush(foreground));
-            dockControls.mcp.Foreground(SolidColorBrush(foreground));
+            dockControls.usage.Foreground(SolidColorBrush(muted));
+            dockControls.mcp.Foreground(SolidColorBrush(muted));
             deadSurface.Background(SolidColorBrush(background));
             deadText.Foreground(SolidColorBrush(foreground));
         }
@@ -1055,6 +1090,7 @@ namespace
         DesktopWindowXamlSource xamlSource{ nullptr };
         HWND host = nullptr;
         HWND island = nullptr;
+        HWND browserParent = nullptr;
         winrt::com_ptr<HostControlSettings> settingsImpl;
         TermControl termControl{ nullptr };
         ITerminalConnection terminalConnection{ nullptr };
@@ -1182,7 +1218,7 @@ namespace
                 throw withHresultContext("get_WindowHandle", error);
             }
             ShowWindow(islandWindow, SW_HIDE);
-            attachSessionHostWindow(hostWindow, parentHandle);
+            attachSessionHostWindow(hostWindow, findElectronContentWindow(parentHandle));
 
             auto settingsImpl = winrt::make_self<HostControlSettings>();
             auto settings = settingsImpl.as<IControlSettings>();
@@ -1230,51 +1266,55 @@ namespace
             auto composerCard = Border{};
             composerCard.HorizontalAlignment(HorizontalAlignment::Stretch);
             composerCard.VerticalAlignment(VerticalAlignment::Bottom);
-            composerCard.Margin(Thickness{ 12.0, 0.0, 12.0, 12.0 });
-            composerCard.Padding(Thickness{ 10.0, 8.0, 10.0, 8.0 });
-            composerCard.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 10.0, 10.0, 10.0, 10.0 });
+            composerCard.Margin(Thickness{ 0.0, 0.0, 0.0, 0.0 });
+            composerCard.Padding(Thickness{ 12.0, 10.0, 12.0, 10.0 });
+            composerCard.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 0.0, 0.0, 0.0, 0.0 });
 
             auto composer = TextBox{};
             composer.HorizontalAlignment(HorizontalAlignment::Stretch);
             composer.VerticalAlignment(VerticalAlignment::Center);
-            composer.Height(40.0);
+            composer.Height(52.0);
             composer.AcceptsReturn(false);
             composer.IsSpellCheckEnabled(false);
             composer.PlaceholderText(winrt::hstring(L"Message Pi"));
             composer.FontFamily(winrt::Windows::UI::Xaml::Media::FontFamily(winrt::hstring(L"Cascadia Mono")));
             composer.FontSize(14.0);
-            composer.Padding(Thickness{ 12.0, 0.0, 12.0, 0.0 });
+            composer.Padding(Thickness{ 12.0, 8.0, 12.0, 8.0 });
 
             const auto createDockCombo = [](double width) {
                 auto combo = ComboBox{};
-                combo.Width(width);
-                combo.Height(32.0);
+                combo.MinWidth(width);
+                combo.Height(28.0);
                 combo.MaxDropDownHeight(420.0);
                 combo.FontSize(12.0);
                 return combo;
             };
-            auto cwdCombo = createDockCombo(140.0);
+            auto cwdCombo = createDockCombo(120.0);
             cwdCombo.PlaceholderText(winrt::hstring(L"Folder"));
-            auto worktreeCombo = createDockCombo(130.0);
+            auto worktreeCombo = createDockCombo(110.0);
             worktreeCombo.PlaceholderText(winrt::hstring(L"Worktree"));
-            auto modelCombo = createDockCombo(150.0);
+            auto modelCombo = createDockCombo(140.0);
             modelCombo.PlaceholderText(winrt::hstring(L"Model"));
-            auto thinkingCombo = createDockCombo(100.0);
+            auto thinkingCombo = createDockCombo(90.0);
             thinkingCombo.PlaceholderText(winrt::hstring(L"Thinking"));
             auto usageText = TextBlock{};
             usageText.Text(winrt::hstring(L"Usage —"));
             usageText.VerticalAlignment(VerticalAlignment::Center);
-            usageText.Margin(Thickness{ 8.0, 0.0, 8.0, 0.0 });
+            usageText.Margin(Thickness{ 4.0, 0.0, 8.0, 0.0 });
             usageText.FontSize(12.0);
+            usageText.MinWidth(72.0);
+            usageText.TextWrapping(winrt::Windows::UI::Xaml::TextWrapping::NoWrap);
             auto mcpText = TextBlock{};
             mcpText.Text(winrt::hstring(L"MCP"));
             mcpText.VerticalAlignment(VerticalAlignment::Center);
-            mcpText.Margin(Thickness{ 8.0, 0.0, 8.0, 0.0 });
+            mcpText.Margin(Thickness{ 4.0, 0.0, 8.0, 0.0 });
             mcpText.FontSize(12.0);
 
-            auto dockRow = StackPanel{};
+            auto dockRow = VariableSizedWrapGrid{};
             dockRow.Orientation(Orientation::Horizontal);
-            dockRow.Spacing(6.0);
+            dockRow.MaximumRowsOrColumns(8);
+            dockRow.ItemHeight(32.0);
+            dockRow.HorizontalAlignment(HorizontalAlignment::Left);
             dockRow.Children().Append(cwdCombo);
             dockRow.Children().Append(worktreeCombo);
             dockRow.Children().Append(usageText);
@@ -1284,9 +1324,9 @@ namespace
 
             auto dockCapsule = Border{};
             dockCapsule.HorizontalAlignment(HorizontalAlignment::Stretch);
-            dockCapsule.Padding(Thickness{ 6.0, 4.0, 6.0, 4.0 });
-            dockCapsule.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 9.0, 9.0, 9.0, 9.0 });
-            dockCapsule.BorderThickness(Thickness{ 1.0, 1.0, 1.0, 1.0 });
+            dockCapsule.Padding(Thickness{ 0.0, 0.0, 0.0, 0.0 });
+            dockCapsule.CornerRadius(winrt::Windows::UI::Xaml::CornerRadius{ 0.0, 0.0, 0.0, 0.0 });
+            dockCapsule.BorderThickness(Thickness{ 0.0, 0.0, 0.0, 0.0 });
             dockCapsule.Child(dockRow);
 
             auto composerStack = StackPanel{};
@@ -1321,6 +1361,7 @@ namespace
                 std::move(source),
                 hostWindow,
                 islandWindow,
+                parentHandle,
                 std::move(settingsImpl),
                 control,
                 connection,
@@ -1413,6 +1454,16 @@ namespace
             if (width <= 0 || height <= 0)
             {
                 return;
+            }
+            const auto contentWindow =
+                session->browserParent ? findElectronContentWindow(session->browserParent) : GetParent(session->host);
+            if (contentWindow && GetParent(session->host) != contentWindow)
+            {
+                SetLastError(ERROR_SUCCESS);
+                if (!SetParent(session->host, contentWindow) && GetLastError() != ERROR_SUCCESS)
+                {
+                    throw std::runtime_error("failed to attach session host window to Electron content HWND");
+                }
             }
             for (const auto& [candidateId, candidate] : _sessions)
             {
