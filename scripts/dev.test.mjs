@@ -4,12 +4,28 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 
 import {
+  createTsupWatchArgs,
   launchDetachedAgentHost,
+  requestGracefulElectronRestart,
   superviseDetachedAgentHost,
   superviseRestartableProcess,
   waitForValidJavaScriptBundle,
   waitForViteReady,
 } from "./dev.mjs";
+
+test("development watch ignores source tests that cannot affect runtime bundles", () => {
+  assert.deepEqual(createTsupWatchArgs("C:/project/tsup.js"), [
+    "C:/project/tsup.js",
+    "--config",
+    "tsup.config.ts",
+    "--watch",
+    "src",
+    "--watch",
+    "tsup.config.ts",
+    "--ignore-watch",
+    "**/*.test.mjs",
+  ]);
+});
 
 test("development launches Agent Host outside the supervised Electron process tree", () => {
   let spawnCall;
@@ -37,6 +53,22 @@ test("development launches Agent Host outside the supervised Electron process tr
   assert.equal(spawnCall.options.env.PI_DESKTOP_USER_DATA, "C:/profile");
   assert.equal(spawnCall.options.env.PI_DESKTOP_VERSION, "build-42");
   assert.equal(unrefCalls, 1);
+});
+
+test("development can inherit detached Agent Host diagnostics", () => {
+  let spawnOptions;
+  launchDetachedAgentHost("C:/project", "C:/profile", {
+    nodeExecutable: "node.exe",
+    hostEntry: "C:/project/out/main/agent-host.mjs",
+    hostVersion: "build-42",
+    stdio: ["ignore", "inherit", "inherit"],
+    spawn: (_command, _args, options) => {
+      spawnOptions = options;
+      return { once() {}, unref() {} };
+    },
+  });
+
+  assert.deepEqual(spawnOptions.stdio, ["ignore", "inherit", "inherit"]);
 });
 
 test("development supervisor replaces an idle Host without making it an Electron child", () => {
@@ -189,4 +221,29 @@ test("Electron supervisor reports an unplanned exit", () => {
   child.emit("exit", 7, null);
   assert.deepEqual(exitResult, { code: 7, signal: null });
   supervisor.dispose();
+});
+
+test("development restart asks Electron to quit before the process-tree fallback", async () => {
+  const child = new EventEmitter();
+  const writes = [];
+  const terminated = [];
+  const timers = new Map();
+  let nextTimerId = 0;
+  requestGracefulElectronRestart(child, "C:/profile/electron-restart.request", {
+    writeFile: async (...args) => writes.push(args),
+    terminate: (value) => terminated.push(value),
+    setTimer: (callback) => {
+      nextTimerId += 1;
+      timers.set(nextTimerId, callback);
+      return nextTimerId;
+    },
+    clearTimer: (timerId) => timers.delete(timerId),
+  });
+  await Promise.resolve();
+
+  assert.equal(writes[0][0], "C:/profile/electron-restart.request");
+  assert.equal(timers.size, 1);
+  child.emit("exit", 0, null);
+  assert.equal(timers.size, 0);
+  assert.deepEqual(terminated, []);
 });

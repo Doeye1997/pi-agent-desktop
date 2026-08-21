@@ -10,11 +10,16 @@ import {
   type HostDiscoveryRecord,
   type HostWireMessage,
 } from "../shared/standalone-host-wire.ts";
+import { readRuntimeRegistry } from "../shared/runtime-registry.ts";
 
 export interface StandaloneHostConnection {
   readonly pid: number;
   readonly hostVersion: string;
   readonly piVersion: string | null;
+  readonly generation: number | null;
+  readonly ownerToken: string | null;
+  readonly processStartedAt: string | null;
+  readonly identityVerified: boolean;
   createChannel(): WireMessagePort;
   sendControl(data: unknown): void;
   onControl(listener: (data: unknown) => void): () => void;
@@ -23,6 +28,20 @@ export interface StandaloneHostConnection {
 }
 
 export function readHostDiscovery(userDataDirectory: string): HostDiscoveryRecord | null {
+  const runtimeRegistry = readRuntimeRegistry(userDataDirectory);
+  if (runtimeRegistry) {
+    return {
+      pid: runtimeRegistry.owner.pid,
+      port: runtimeRegistry.endpoint.port,
+      token: runtimeRegistry.endpoint.token,
+      protocolVersion: runtimeRegistry.protocolVersion,
+      hostVersion: runtimeRegistry.hostVersion,
+      startedAt: runtimeRegistry.owner.processStartedAt,
+      generation: runtimeRegistry.owner.generation,
+      ownerToken: runtimeRegistry.owner.ownerToken,
+      processStartedAt: runtimeRegistry.owner.processStartedAt,
+    };
+  }
   try {
     const value = JSON.parse(
       readFileSync(path.join(userDataDirectory, HOST_DISCOVERY_FILE), "utf8"),
@@ -91,12 +110,31 @@ export function connectStandaloneHost(
           return;
         }
         if (message.type !== "ready") return;
+        const identityVerified =
+          discovery.generation !== undefined &&
+          discovery.ownerToken !== undefined &&
+          discovery.processStartedAt !== undefined &&
+          message.generation === discovery.generation &&
+          message.ownerToken === discovery.ownerToken &&
+          message.processStartedAt === discovery.processStartedAt &&
+          message.pid === discovery.pid;
+        if (discovery.generation !== undefined && !identityVerified) {
+          settled = true;
+          cleanupHandshake();
+          peer.close();
+          reject(new Error("Agent Host identity does not match runtime registry"));
+          return;
+        }
         settled = true;
         cleanupHandshake();
         resolve({
           pid: message.pid,
           hostVersion: message.hostVersion,
           piVersion: typeof message.piVersion === "string" ? message.piVersion : null,
+          generation: Number.isSafeInteger(message.generation) ? Number(message.generation) : null,
+          ownerToken: typeof message.ownerToken === "string" ? message.ownerToken : null,
+          processStartedAt: typeof message.processStartedAt === "string" ? message.processStartedAt : null,
+          identityVerified,
           createChannel() {
             const channelId = randomUUID();
             const port = new WireMessagePort(
@@ -148,6 +186,8 @@ export function connectStandaloneHost(
         token: discovery.token,
         protocolVersion,
         clientVersion: options.clientVersion ?? "test",
+        expectedGeneration: discovery.generation,
+        expectedOwnerToken: discovery.ownerToken,
       };
       peer.send(hello);
     });

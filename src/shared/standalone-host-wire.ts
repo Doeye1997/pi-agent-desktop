@@ -11,6 +11,9 @@ export interface HostDiscoveryRecord {
   protocolVersion: number;
   hostVersion: string;
   startedAt: string;
+  generation?: number;
+  ownerToken?: string;
+  processStartedAt?: string;
 }
 
 export type HostWireMessage =
@@ -19,6 +22,8 @@ export type HostWireMessage =
       token: string;
       protocolVersion: number;
       clientVersion: string;
+      expectedGeneration?: number;
+      expectedOwnerToken?: string;
     }
   | {
       type: "ready";
@@ -26,10 +31,13 @@ export type HostWireMessage =
       protocolVersion: number;
       hostVersion: string;
       piVersion?: string;
+      generation?: number;
+      ownerToken?: string;
+      processStartedAt?: string;
     }
   | {
       type: "rejected";
-      code: "AUTH_FAILED" | "PROTOCOL_MISMATCH";
+      code: "AUTH_FAILED" | "PROTOCOL_MISMATCH" | "IDENTITY_MISMATCH";
       message: string;
       hostProtocolVersion?: number;
     }

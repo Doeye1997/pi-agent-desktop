@@ -10,6 +10,12 @@ function createFakeHost() {
     mount(request) {
       calls.push(["mount", request]);
     },
+    attach(parentWindowHandle) {
+      calls.push(["attach", parentWindowHandle]);
+    },
+    detach() {
+      calls.push(["detach"]);
+    },
     focus(sessionId) {
       calls.push(["focus", sessionId]);
     },
@@ -297,4 +303,46 @@ test("native process exit preserves the mounted display for Enter restart", () =
   manager.dispose();
   assert.deepEqual(host.calls.at(-1), ["dispose"]);
   assert.deepEqual(manager.snapshotMarks(), {});
+});
+
+test("Electron replacement detaches native windows without disposing their TUI sessions", () => {
+  const host = createFakeHost();
+  const manager = createSessionDisplayManager({
+    createHost: () => host,
+    getParentWindowHandle: () => "hwnd:replacement",
+  });
+  manager.start(request());
+
+  manager.detach();
+  manager.attach();
+
+  assert.deepEqual(host.calls.slice(1), [["detach"], ["attach", "hwnd:replacement"]]);
+  assert.equal(manager.snapshotMarks()["sess-1"], "running");
+  assert.equal(host.calls.some(([operation]) => operation === "dispose"), false);
+});
+
+test("stale Electron parent errors keep the live TUI available for reattach", () => {
+  const host = createFakeHost();
+  let emit;
+  const manager = createSessionDisplayManager({
+    createHost: (onEvent) => {
+      emit = onEvent;
+      return host;
+    },
+    getParentWindowHandle: () => "hwnd:replacement",
+  });
+  manager.start(request());
+
+  emit({
+    type: "host-error",
+    code: "INVALID_PARENT_WINDOW",
+    message: "failed to attach session host window to parent, error=1400",
+  });
+  manager.detach();
+  manager.attach();
+  manager.start(request());
+
+  assert.equal(manager.snapshotMarks()["sess-1"], "running");
+  assert.equal(host.calls.filter(([operation]) => operation === "mount").length, 1);
+  assert.deepEqual(host.calls.slice(-3), [["detach"], ["attach", "hwnd:replacement"], ["focus", "sess-1"]]);
 });

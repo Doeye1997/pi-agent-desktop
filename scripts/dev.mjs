@@ -2,8 +2,8 @@
 /** Dev orchestration: Vite (renderer) + tsup watch (main/preload/host) + Electron. */
 
 import { spawn } from "node:child_process";
-import { statSync, unwatchFile, watchFile } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { unwatchFile, watchFile } from "node:fs";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Script } from "node:vm";
@@ -79,11 +79,12 @@ export function launchDetachedAgentHost(projectRoot, userDataDirectory, options 
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
   const hostEntry = options.hostEntry ?? path.join(projectRoot, "out", "main", "agent-host.mjs");
   const hostVersion = options.hostVersion ?? String(Date.now());
+  const stdio = options.stdio ?? "ignore";
   const spawnProcess = options.spawn ?? spawn;
   const child = spawnProcess(nodeExecutable, [hostEntry], {
     cwd: projectRoot,
     detached: true,
-    stdio: "ignore",
+    stdio,
     windowsHide: true,
     env: {
       ...process.env,
@@ -190,6 +191,32 @@ export function superviseRestartableProcess(options) {
   return { dispose, scheduleRestart };
 }
 
+export function requestGracefulElectronRestart(child, restartFile, options = {}) {
+  const terminate = options.terminate ?? terminateProcessTree;
+  const write = options.writeFile ?? writeFile;
+  const setTimer = options.setTimer ?? setTimeout;
+  const clearTimer = options.clearTimer ?? clearTimeout;
+  const timeoutMs = options.timeoutMs ?? 3_000;
+  const fallbackTimer = setTimer(() => terminate(child), timeoutMs);
+  fallbackTimer.unref?.();
+  child.once("exit", () => clearTimer(fallbackTimer));
+  void write(restartFile, `${Date.now()}\n`, "utf8").catch(() => terminate(child));
+}
+
+export function createTsupWatchArgs(tsupCli) {
+  return [
+    tsupCli,
+    "--config",
+    "tsup.config.ts",
+    "--watch",
+    "src",
+    "--watch",
+    "tsup.config.ts",
+    "--ignore-watch",
+    "**/*.test.mjs",
+  ];
+}
+
 export async function waitForValidJavaScriptBundle(filePath, options = {}) {
   const read = options.readFile ?? readFile;
   const getFileStat = options.stat ?? stat;
@@ -258,25 +285,22 @@ export async function runDev(projectRoot = root) {
     const userDataDir =
       process.env.PI_DESKTOP_USER_DATA_DIR ?? path.join(projectRoot, "node_modules", ".cache", "pi-desktop-dev");
     const nodeExecutable = process.env.npm_node_execpath ?? process.execPath;
+    const developmentHostVersion = `dev-${process.pid}-${Date.now()}`;
     const hostSupervisor = superviseDetachedAgentHost({
       start: () =>
         launchDetachedAgentHost(projectRoot, userDataDir, {
           nodeExecutable,
           hostEntry: hostBundle,
-          hostVersion: String(Math.trunc(statSync(hostBundle).mtimeMs)),
+          hostVersion: developmentHostVersion,
+          stdio:
+            process.env.PI_DESKTOP_HOST_STDIO === "inherit"
+              ? ["ignore", "inherit", "inherit"]
+              : "ignore",
         }),
     });
     const tsupCli = resolvePackageFile(projectRoot, "tsup", "dist/cli-default.js");
     const viteCli = resolvePackageFile(projectRoot, "vite", "bin/vite.js");
-    runtime.run("tsup watch", process.execPath, [
-      tsupCli,
-      "--config",
-      "tsup.config.ts",
-      "--watch",
-      "src",
-      "--watch",
-      "tsup.config.ts",
-    ]);
+    runtime.run("tsup watch", process.execPath, createTsupWatchArgs(tsupCli));
     runtime.run("Vite", process.execPath, [viteCli, "--config", "vite.config.ts"]);
     await Promise.all([
       waitForViteReady(rendererUrl),
@@ -297,12 +321,14 @@ export async function runDev(projectRoot = root) {
         PI_DESKTOP_DISABLE_GPU: "1",
         PI_DESKTOP_HOST_EXTERNAL_SUPERVISOR: "1",
         PI_DESKTOP_NODE_EXECUTABLE: nodeExecutable,
+        PI_DESKTOP_VERSION: developmentHostVersion,
+        PI_DESKTOP_DEV_RESTART_FILE: path.join(userDataDir, "electron-restart.request"),
         PATH: [windowsTerminalStage, process.env.PATH].filter(Boolean).join(path.delimiter),
       },
     };
     const electron = superviseRestartableProcess({
       start: () => runtime.run("Electron", resolveElectronBinary(projectRoot), electronArgs, electronOptions),
-      stop: (child) => terminateProcessTree(child),
+      stop: (child) => requestGracefulElectronRestart(child, electronOptions.env.PI_DESKTOP_DEV_RESTART_FILE),
       onUnexpectedExit: ({ error, code, signal }) => {
         if (error) {
           console.error(`[dev] Electron failed to start: ${error.message}`);

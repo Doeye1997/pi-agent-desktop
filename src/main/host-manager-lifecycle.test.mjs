@@ -88,3 +88,109 @@ test("HostManager reports interrupted work and tells Renderer to rebuild RPC aft
     true,
   );
 });
+
+test("HostManager reconnects the Electron display client to the persistent Host", async (t) => {
+  const userDataDirectory = mkdtempSync(path.join(tmpdir(), "pi-host-display-lifecycle-"));
+  const controls = [];
+  const events = [];
+  const server = await startStandaloneHostServer({
+    userDataDirectory,
+    hostVersion: "test",
+    rpcServer: createRpcServer(),
+    isBusy: () => true,
+    onControl: (message) => controls.push(message),
+  });
+  const manager = new HostManager("unused", {
+    userDataDirectory,
+    hostVersion: "test",
+    environment: { PI_DESKTOP_HOST_EXTERNAL_SUPERVISOR: "1" },
+  });
+  manager.setSessionDisplayEventListener((event) => events.push(event));
+  manager.sendSessionDisplayCommand({ type: "hide", sessionId: "queued-session" });
+  manager.start();
+  t.after(async () => {
+    await manager.stop();
+    await server.close();
+    rmSync(userDataDirectory, { recursive: true, force: true });
+  });
+
+  await waitFor(() => manager.getStatus() === "ready", "display Host connection");
+  await waitFor(
+    () =>
+      controls.some(
+        (message) => message.type === "session-display-request" && message.request?.command?.type === "sync",
+      ),
+    "display state sync",
+  );
+  await waitFor(
+    () =>
+      controls.some(
+        (message) =>
+          message.type === "session-display-request" &&
+          message.request?.command?.type === "hide" &&
+          message.request.command.sessionId === "queued-session",
+      ),
+    "queued display command",
+  );
+  const detachPromise = manager.detachSessionDisplays();
+  await waitFor(
+    () =>
+      controls.some(
+        (message) =>
+          message.type === "session-display-request" &&
+          message.request?.command?.type === "detach" &&
+          typeof message.request.requestId === "string",
+      ),
+    "display detach",
+  );
+  const detachRequest = controls.findLast(
+    (message) => message.type === "session-display-request" && message.request?.command?.type === "detach",
+  );
+  server.broadcastControl({
+    type: "session-display-result",
+    result: {
+      requestId: detachRequest.request.requestId,
+      generation: server.generation,
+      ok: true,
+    },
+  });
+  await detachPromise;
+
+  server.broadcastControl({
+    type: "session-display-event",
+    event: { type: "marks", marks: { "tui-session": "running" } },
+  });
+  await waitFor(() => events.length === 1, "display event forwarding");
+  assert.deepEqual(events[0], { type: "marks", marks: { "tui-session": "running" } });
+});
+
+test("HostManager uses the supervisor's development Host version", async (t) => {
+  const userDataDirectory = mkdtempSync(path.join(tmpdir(), "pi-host-version-lifecycle-"));
+  const controls = [];
+  const server = await startStandaloneHostServer({
+    userDataDirectory,
+    hostVersion: "dev-generation-42",
+    rpcServer: createRpcServer(),
+    isBusy: () => true,
+    onControl: (message) => controls.push(message),
+  });
+  const manager = new HostManager("missing-agent-host.mjs", {
+    userDataDirectory,
+    environment: {
+      PI_DESKTOP_HOST_EXTERNAL_SUPERVISOR: "1",
+      PI_DESKTOP_VERSION: "dev-generation-42",
+    },
+  });
+  manager.start();
+  t.after(async () => {
+    await manager.stop();
+    await server.close();
+    rmSync(userDataDirectory, { recursive: true, force: true });
+  });
+
+  await waitFor(() => manager.getStatus() === "ready", "development Host connection");
+  assert.equal(
+    controls.some((message) => message?.type === "replace-when-idle"),
+    false,
+  );
+});

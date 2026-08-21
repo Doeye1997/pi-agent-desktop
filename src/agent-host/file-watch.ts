@@ -2,6 +2,7 @@
  * Per-path fs.watch → Streams["files.changed"].
  */
 import fs from "fs";
+import path from "node:path";
 import type { RpcServer } from "../contract/rpc";
 import { getAllowedFileRoots, isFilePathAllowed } from "./file-access";
 import { isFilePathReferencedBySession } from "./session-file-references";
@@ -14,6 +15,14 @@ type WatchEntry = {
 };
 
 const watches = new Map<string, WatchEntry>();
+
+export function nativeWatchPath(filePath: string): string {
+  return path.resolve(filePath);
+}
+
+export function directoryWatchOptions(platform: NodeJS.Platform = process.platform): { recursive: boolean } {
+  return { recursive: platform !== "win32" };
+}
 
 export function createFileWatchService(server: RpcServer) {
   async function assertAllowed(filePath: string, sourceSessionId?: string): Promise<void> {
@@ -36,10 +45,11 @@ export function createFileWatchService(server: RpcServer) {
         return releaseFileWatch(filePath);
       }
 
-      if (!fs.existsSync(filePath)) {
+      const watchPath = nativeWatchPath(filePath);
+      if (!fs.existsSync(watchPath)) {
         throw new RpcError({ code: "NOT_FOUND", message: "Path not found" });
       }
-      const initialStats = fs.statSync(filePath);
+      const initialStats = fs.statSync(watchPath);
       if (!initialStats.isFile() && !initialStats.isDirectory()) {
         throw new RpcError({ code: "BAD_REQUEST", message: "Path is not watchable" });
       }
@@ -51,7 +61,7 @@ export function createFileWatchService(server: RpcServer) {
         const timer = setTimeout(() => {
           if (watchEntry) watchEntry.timer = null;
           try {
-            const s = fs.statSync(filePath);
+            const s = fs.statSync(watchPath);
             server.emit("files.changed", filePath, {
               path: filePath,
               event: "change",
@@ -70,13 +80,13 @@ export function createFileWatchService(server: RpcServer) {
       };
       try {
         watcher = initialStats.isDirectory()
-          ? fs.watch(filePath, { recursive: true }, emitChange)
-          : fs.watch(filePath, emitChange);
+          ? fs.watch(watchPath, directoryWatchOptions(), emitChange)
+          : fs.watch(watchPath, emitChange);
       } catch (err) {
         // Recursive watching is not supported by every Node/platform pair.
         if (initialStats.isDirectory()) {
           try {
-            watcher = fs.watch(filePath, emitChange);
+            watcher = fs.watch(watchPath, emitChange);
           } catch (fallbackError) {
             throw new RpcError({
               code: "INTERNAL",

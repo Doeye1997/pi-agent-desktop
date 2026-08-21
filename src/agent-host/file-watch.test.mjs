@@ -4,19 +4,38 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-const { allowFileRoot, createFileWatchService, getActiveFileWatchCount, stopAllFileWatches } = await importTestBundle(
+const {
+  allowFileRoot,
+  createFileWatchService,
+  directoryWatchOptions,
+  getActiveFileWatchCount,
+  nativeWatchPath,
+  stopAllFileWatches,
+} =
+  await importTestBundle(
   "src/agent-host/file-watch",
   {
     packages: "external",
     stdin: {
       contents:
-        'export { allowFileRoot } from "./file-access.ts"; export { createFileWatchService, getActiveFileWatchCount, stopAllFileWatches } from "./file-watch.ts";',
+        'export { allowFileRoot } from "./file-access.ts"; export { createFileWatchService, directoryWatchOptions, getActiveFileWatchCount, nativeWatchPath, stopAllFileWatches } from "./file-watch.ts";',
       resolveDir: import.meta.dirname,
       sourcefile: "file-watch-test-entry.ts",
       loader: "ts",
     },
-  },
-);
+    },
+  );
+
+test("file watch normalizes API paths before passing them to the native watcher", () => {
+  const apiPath = process.platform === "win32" ? "F:/Project/demo" : "/project/demo";
+  assert.equal(nativeWatchPath(apiPath), path.resolve(apiPath));
+  if (process.platform === "win32") assert.equal(nativeWatchPath(apiPath).includes("/"), false);
+});
+
+test("file watch avoids libuv recursive directory watching on Windows", () => {
+  assert.deepEqual(directoryWatchOptions("win32"), { recursive: false });
+  assert.deepEqual(directoryWatchOptions("linux"), { recursive: true });
+});
 
 test("file watch leases release shared refs independently and shutdown closes the remainder", async (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), "pi-file-watch-"));

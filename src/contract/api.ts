@@ -98,6 +98,7 @@ export interface Api {
     params: { projectRoot: string };
     result: {
       worktrees: WorktreeInfo[];
+      branches: string[];
       projectRoot: string;
       isGit: boolean;
       isTopLevel: boolean;

@@ -13,8 +13,15 @@ import { interruptCommandDescendants, terminatePidTree } from "../agent-host/pro
 import type { ToolchainSnapshot } from "../shared/toolchains/types";
 import { HOST_DISCOVERY_FILE, type WireMessagePort } from "../shared/standalone-host-wire";
 import { BrowserError } from "./browser/browser-error";
+import type {
+  SessionDisplayControlCommand,
+  SessionDisplayControlEvent,
+  SessionDisplayControlRequest,
+  SessionDisplayControlResult,
+} from "../shared/session-display-control";
 import { appendMainLog } from "./logger";
 import { connectStandaloneHost, readHostDiscovery, type StandaloneHostConnection } from "./standalone-host-client";
+import { resolveWindowsTerminalHostPath } from "./fork/windows-terminal-host";
 
 const PING_INTERVAL_MS = 15_000;
 const PING_TIMEOUT_MS = 10_000;
@@ -37,6 +44,15 @@ interface RendererBridge {
   localPort: MessagePortMain;
   remotePort: WireMessagePort;
   close(): void;
+}
+
+interface PendingSessionDisplayRequest {
+  requestId: string;
+  command: SessionDisplayControlCommand;
+  generation: number | null;
+  resolve?: () => void;
+  reject?: (error: Error) => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface HostManagerOptions {
@@ -63,6 +79,7 @@ export class HostManager {
   private lastPong = 0;
   private onStatusChange: ((status: HostStatus, detail?: string) => void) | null = null;
   private onHostMessage: ((message: HostMessage) => void) | null = null;
+  private onSessionDisplayEvent: ((event: SessionDisplayControlEvent) => void) | null = null;
   private requestHandler: ((method: string, params: unknown) => Promise<unknown>) | null = null;
   private toolchainSnapshot: ToolchainSnapshot | null = null;
   private toolchainAckRevision = -1;
@@ -72,6 +89,7 @@ export class HostManager {
   private bashChildPids = new Set<number>();
   private runningSessionIds = new Set<string>();
   private rendererBridges = new Set<RendererBridge>();
+  private pendingSessionDisplayRequests = new Map<string, PendingSessionDisplayRequest>();
   private reconnectReason: "connection-recovery" | "crash-recovery" | null = null;
   private stopped = true;
   private launchAttempted = false;
@@ -86,12 +104,19 @@ export class HostManager {
     options: HostManagerOptions = {},
   ) {
     this.userDataDirectory = options.userDataDirectory ?? app.getPath("userData");
+    this.environment = { ...(options.environment ?? process.env) };
     const developmentBuildIdentity = fs.existsSync(hostEntry)
       ? String(Math.trunc(fs.statSync(hostEntry).mtimeMs))
       : "missing";
-    this.hostVersion = options.hostVersion ?? (app.isPackaged ? app.getVersion() : developmentBuildIdentity);
+    const supervisedDevelopmentVersion = this.environment.PI_DESKTOP_VERSION?.trim();
+    this.hostVersion =
+      options.hostVersion ??
+      (app.isPackaged ? app.getVersion() : supervisedDevelopmentVersion || developmentBuildIdentity);
     this.executable = options.executable ?? process.execPath;
-    this.environment = options.environment ?? process.env;
+    const terminalHostExecutable = resolveWindowsTerminalHostPath(this.environment);
+    if (terminalHostExecutable) {
+      this.environment.PI_DESKTOP_WINDOWS_TERMINAL_HOST = terminalHostExecutable;
+    }
     this.externallySupervised = this.environment.PI_DESKTOP_HOST_EXTERNAL_SUPERVISOR === "1";
   }
 
@@ -101,6 +126,36 @@ export class HostManager {
 
   setMessageListener(callback: (message: HostMessage) => void): void {
     this.onHostMessage = callback;
+  }
+
+  setSessionDisplayEventListener(callback: (event: SessionDisplayControlEvent) => void): void {
+    this.onSessionDisplayEvent = callback;
+  }
+
+  sendSessionDisplayCommand(command: SessionDisplayControlCommand): void {
+    this.queueSessionDisplayRequest({
+      requestId: randomUUID(),
+      command,
+      generation: null,
+    });
+  }
+
+  detachSessionDisplays(timeoutMs = 3_000): Promise<void> {
+    const requestId = randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingSessionDisplayRequests.delete(requestId);
+        reject(new Error(`Session display detach timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.queueSessionDisplayRequest({
+        requestId,
+        command: { type: "detach" },
+        generation: null,
+        resolve,
+        reject,
+        timer,
+      });
+    });
   }
 
   setRequestHandler(callback: (method: string, params: unknown) => Promise<unknown>): void {
@@ -169,6 +224,7 @@ export class HostManager {
     this.rendererBridges.clear();
     connection?.close();
     this.connection = null;
+    this.rejectPendingSessionDisplayRequests(new Error("Agent Host stopped before session display requests completed"));
     this.bashChildPids.clear();
     this.runningSessionIds.clear();
     this.reconnectReason = null;
@@ -193,10 +249,6 @@ export class HostManager {
     appendMainLog(
       `session-abort ${sessionId} interrupt host=${hostPid ?? "none"} bash=${bashPids.join(",") || "none"}`,
     );
-  }
-
-  setCockpitRunning(sessionId: string, running: boolean): void {
-    this.connection?.sendControl({ type: "cockpit-running", sessionId, running });
   }
 
   attachRendererPort(port: MessagePortMain): void {
@@ -381,9 +433,16 @@ export class HostManager {
     this.reconnectReason = null;
     connection.onControl((message) => this.handleControl(message));
     connection.onClose(() => this.handleConnectionClosed(connection));
+    for (const request of [...this.pendingSessionDisplayRequests.values()]) {
+      this.sendSessionDisplayRequest(request);
+    }
+    this.sendSessionDisplayCommand({ type: "sync" });
     this.postToolchainSnapshot("toolchain:init");
     this.postBrowserSnapshot("browser:init");
     if (connection.hostVersion !== this.hostVersion) {
+      appendMainLog(
+        `agent-host version mismatch connected=${connection.hostVersion} expected=${this.hostVersion}; requesting idle replacement`,
+      );
       connection.sendControl({ type: "replace-when-idle", expectedHostVersion: this.hostVersion });
     }
     this.setStatus("ready");
@@ -449,6 +508,19 @@ export class HostManager {
       }
     } else if (message.type === "host-rpc") {
       void this.handleHostRequest(message);
+    } else if (message.type === "session-display-event") {
+      this.onSessionDisplayEvent?.(message.event as SessionDisplayControlEvent);
+    } else if (message.type === "session-display-result") {
+      this.handleSessionDisplayResult(message.result as SessionDisplayControlResult);
+    } else if (message.type === "session-display-detached" || message.type === "session-display-detach-failed") {
+      const requestId = String(message.requestId ?? "");
+      const pending = this.pendingSessionDisplayRequests.get(requestId);
+      if (pending) {
+        this.pendingSessionDisplayRequests.delete(requestId);
+        if (pending.timer) clearTimeout(pending.timer);
+        if (message.type === "session-display-detached") pending.resolve?.();
+        else pending.reject?.(new Error(String(message.message ?? "Session display detach failed")));
+      }
     }
     this.onHostMessage?.(message);
   }
@@ -500,6 +572,71 @@ export class HostManager {
     }, PING_INTERVAL_MS);
   }
 
+  private queueSessionDisplayRequest(request: PendingSessionDisplayRequest): void {
+    if (this.pendingSessionDisplayRequests.size >= 512) {
+      const oldestRequestId = this.pendingSessionDisplayRequests.keys().next().value;
+      if (typeof oldestRequestId === "string") {
+        const oldest = this.pendingSessionDisplayRequests.get(oldestRequestId);
+        if (oldest?.timer) clearTimeout(oldest.timer);
+        oldest?.reject?.(new Error("Session display request queue overflow"));
+        this.pendingSessionDisplayRequests.delete(oldestRequestId);
+      }
+    }
+    this.pendingSessionDisplayRequests.set(request.requestId, request);
+    this.sendSessionDisplayRequest(request);
+  }
+
+  private sendSessionDisplayRequest(request: PendingSessionDisplayRequest): void {
+    const connection = this.connection;
+    if (!connection) return;
+    const connectionGeneration = connection.generation ?? 0;
+    if (request.generation === null) request.generation = connectionGeneration;
+    if (request.generation !== connectionGeneration) {
+      this.pendingSessionDisplayRequests.delete(request.requestId);
+      if (request.timer) clearTimeout(request.timer);
+      request.reject?.(
+        new Error(
+          `Session display owner changed from generation ${request.generation} to ${connectionGeneration}`,
+        ),
+      );
+      if (!request.reject) {
+        appendMainLog(
+          `session-display request dropped after owner generation changed ${request.generation}->${connectionGeneration}`,
+        );
+      }
+      return;
+    }
+    if (!connection.identityVerified) {
+      connection.sendControl({
+        type: "session-display",
+        command: request.command,
+        ...(request.command.type === "detach" ? { requestId: request.requestId } : {}),
+      });
+      if (request.command.type !== "detach") this.pendingSessionDisplayRequests.delete(request.requestId);
+      return;
+    }
+    const wireRequest: SessionDisplayControlRequest = {
+      requestId: request.requestId,
+      generation: connectionGeneration,
+      command: request.command,
+    };
+    connection.sendControl({ type: "session-display-request", request: wireRequest });
+  }
+
+  private handleSessionDisplayResult(result: SessionDisplayControlResult): void {
+    if (!result || typeof result.requestId !== "string") return;
+    const pending = this.pendingSessionDisplayRequests.get(result.requestId);
+    if (!pending || pending.generation !== result.generation) return;
+    this.pendingSessionDisplayRequests.delete(result.requestId);
+    if (pending.timer) clearTimeout(pending.timer);
+    if (result.ok) pending.resolve?.();
+    else {
+      const error = new Error(result.message);
+      pending.reject?.(error);
+      if (!pending.reject) appendMainLog(`session-display request failed: ${result.message}`);
+    }
+  }
+
   private postToolchainSnapshot(type: "toolchain:init" | "toolchain:changed"): void {
     if (!this.connection || !this.toolchainSnapshot) return;
     this.connection.sendControl({ type, snapshot: this.toolchainSnapshot });
@@ -529,6 +666,14 @@ export class HostManager {
     if (!this.reconnectTimer) return;
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+  }
+
+  private rejectPendingSessionDisplayRequests(error: Error): void {
+    for (const pending of this.pendingSessionDisplayRequests.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject?.(error);
+    }
+    this.pendingSessionDisplayRequests.clear();
   }
 }
 

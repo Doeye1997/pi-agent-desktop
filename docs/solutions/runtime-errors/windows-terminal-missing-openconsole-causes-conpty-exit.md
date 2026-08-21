@@ -1,6 +1,7 @@
 ---
 title: Missing matching OpenConsole makes the Windows Terminal host exit immediately
 date: 2026-08-20
+last_updated: 2026-08-20
 category: runtime-errors
 module: Windows Terminal XAML host
 problem_type: runtime_error
@@ -38,11 +39,11 @@ In this incident, the native XAML Island host could load `TerminalConnection.dll
 
 Treat `TerminalConnection.dll` and `OpenConsole.exe` as a matched staging unit.
 
-The preparation script now includes `OpenConsole.exe` in the completeness check ([`prepare-windows-terminal-host.mjs:46`](../../../scripts/prepare-windows-terminal-host.mjs)) and copies it from the same Windows Terminal build root as the terminal DLLs ([`prepare-windows-terminal-host.mjs:150`](../../../scripts/prepare-windows-terminal-host.mjs)). A staging directory missing either file is rebuilt instead of being accepted as complete.
+The preparation script now includes `OpenConsole.exe` in the completeness check ([`prepare-windows-terminal-host.mjs:68`](../../../scripts/prepare-windows-terminal-host.mjs)) and copies it from the same Windows Terminal build root as the terminal DLLs ([`prepare-windows-terminal-host.mjs:173`](../../../scripts/prepare-windows-terminal-host.mjs)). A staging directory missing either file is rebuilt instead of being accepted as complete.
 
-The native host also uses one generated session GUID for both control settings and connection initialization ([`pi-session-display-host.cpp:694`](../../../native/wt-xaml-island/pi-session-display-host.cpp), [`pi-session-display-host.cpp:846`](../../../native/wt-xaml-island/pi-session-display-host.cpp)). When the connection closes, it marks the mounted display dead without deleting the native session, allowing a `RestartTerminalRequested` event to reconnect it ([`pi-session-display-host.cpp:912`](../../../native/wt-xaml-island/pi-session-display-host.cpp), [`pi-session-display-host.cpp:947`](../../../native/wt-xaml-island/pi-session-display-host.cpp)). The TypeScript manager preserves that mount on a dead mark and continues forwarding input; its regression test sends Enter after the dead mark ([`session-display.test.mjs:107`](../../../src/main/fork/session-display.test.mjs)).
+The native host also uses one generated session GUID for both control settings and connection initialization ([`pi-session-display-host.cpp:1271`](../../../native/wt-xaml-island/pi-session-display-host.cpp), [`pi-session-display-host.cpp:1276`](../../../native/wt-xaml-island/pi-session-display-host.cpp)). When the connection closes, it marks the mounted display dead without deleting the native session, allowing a `RestartTerminalRequested` event to reconnect it ([`pi-session-display-host.cpp:1712`](../../../native/wt-xaml-island/pi-session-display-host.cpp), [`pi-session-display-host.cpp:1440`](../../../native/wt-xaml-island/pi-session-display-host.cpp)). The TypeScript manager preserves that mount on a dead mark and continues forwarding input; its regression test sends Enter after the dead mark ([`session-display.test.mjs:294`](../../../src/main/fork/session-display.test.mjs)).
 
-Finally, the host releases its own references but keeps the manually loaded WinRT/XAML modules loaded for the process lifetime, leaving final unload ordering to the Windows loader ([`pi-session-display-host.cpp:316`](../../../native/wt-xaml-island/pi-session-display-host.cpp), [`pi-session-display-host.cpp:642`](../../../native/wt-xaml-island/pi-session-display-host.cpp)).
+Finally, the host releases its own references but keeps the manually loaded WinRT/XAML modules loaded for the process lifetime, leaving final unload ordering to the Windows loader ([`pi-session-display-host.cpp:404`](../../../native/wt-xaml-island/pi-session-display-host.cpp), [`pi-session-display-host.cpp:1210`](../../../native/wt-xaml-island/pi-session-display-host.cpp)).
 
 ## Why This Works
 
@@ -53,7 +54,7 @@ The session GUID, restart retention, and DLL lifetime changes close adjacent lif
 ## Prevention
 
 - Stage Windows Terminal native assets as a version-matched set; never copy `TerminalConnection.dll` alone.
-- Keep `OpenConsole.exe` in both the copy manifest and the staging-completeness predicate. The regression test enforces both requirements ([`windows-terminal-host.test.mjs:23`](../../../src/main/fork/windows-terminal-host.test.mjs)).
+- Keep `OpenConsole.exe` in both the copy manifest and the staging-completeness predicate. The regression test enforces both requirements ([`windows-terminal-host.test.mjs:26`](../../../src/main/fork/windows-terminal-host.test.mjs)).
 - Keep `TermControl` as the sole owner of the Pi child and ConPTY. A node-pty byte bridge would reintroduce the double-PTY failure mode already retired by the session-display decision ([`learnings.md`](../../../.codex/agent-loop/learnings.md)).
 - Diagnose native terminal failures by logging connection transitions, child PID, and exit code. Derive elapsed time from timestamped host logs when needed. A brief `Connected` state does not prove the child is healthy.
 - Before changing Pi arguments, run the exact command in an independent ConPTY. If it stays alive there, compare the host's staged native runtime first.
@@ -68,4 +69,5 @@ node --test src/main/fork/session-display.test.mjs src/main/ipc-trust.test.mjs s
 ## Related Issues
 
 - [Windows Terminal XAML island display spec](../../../.scratch/wt-xaml-island/spec.md) defines the no-fallback native display contract that made this a hard runtime failure rather than an xterm fallback.
+- [Locked Windows Terminal host asset blocks development startup](locked-windows-terminal-host-asset-blocks-dev-startup.md) covers the distinct complete-stage case where a surviving Agent Host prevents an in-place binary refresh.
 - No existing `docs/solutions` entry covered the missing matched console-server asset as of 2026-08-20.
