@@ -120,9 +120,11 @@ test("native host parks sessions across Electron replacement and reparents them 
   assert.match(hostSource, /else if \(type == L"attach"\)[\s\S]*host\.attach/);
   assert.match(
     hostSource,
-    /if \(find\(request\.sessionId\)\)[\s\S]*attachSessionHostWindow\(session->host,[\s\S]*focus\(request\.sessionId\)/,
+    /if \(find\(request\.sessionId\)\)[\s\S]*ensureSessionHostWindow\(session, parentHandle\)[\s\S]*focus\(request\.sessionId\)/,
   );
   assert.match(hostSource, /isInvalidParentWindowFailure[\s\S]*type == L"attach" \|\| type == L"bounds"/);
+  assert.match(hostSource, /if \(session->host && IsWindow\(session->host\)\)/);
+  assert.match(hostSource, /session->xamlSource = std::move\(source\)/);
   assert.match(hostSource, /attachSessionHostWindow\(session->host, parentHandle\)/);
   assert.match(hostSource, /electronContentOrigin\(session->browserParent\)/);
   assert.match(hostSource, /x \+ contentOrigin\.x[\s\S]*y \+ contentOrigin\.y/);

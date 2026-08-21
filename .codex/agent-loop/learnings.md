@@ -1,5 +1,10 @@
 # Learnings
 
+## 2026-08-21
+
+- **Trap:** A native XAML session HWND is a cross-process child of the Electron cockpit. If the cockpit disappears before detach, Windows destroys that child while the persistent Agent Host still owns the live `TermControl` and ConPTY; the next `SetParent` fails with error 1400.
+- **Do instead:** On attach or existing-session mount, validate the session HWND. Recreate its `DesktopWindowXamlSource` host and move the existing root visual into it, preserving the Pi process and connection.
+
 ## 2026-08-19
 
 - **Decision:** The Windows Terminal replacement owns the Pi session display through the native TermControl host. The Electron renderer keeps only a positioned surface hole and sends bounds/theme/input over the session-display bridge.

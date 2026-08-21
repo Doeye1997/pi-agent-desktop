@@ -1549,8 +1549,7 @@ namespace
             if (find(request.sessionId))
             {
                 const auto session = find(request.sessionId);
-                attachSessionHostWindow(session->host, parentHandle);
-                session->browserParent = parentHandle;
+                ensureSessionHostWindow(session, parentHandle);
                 focus(request.sessionId);
                 return;
             }
@@ -1853,8 +1852,7 @@ namespace
             }
             for (const auto& [sessionId, session] : _sessions)
             {
-                attachSessionHostWindow(session->host, parentHandle);
-                session->browserParent = parentHandle;
+                ensureSessionHostWindow(session, parentHandle);
                 ShowWindow(session->host, SW_HIDE);
             }
             emitDiagnostic("command=attach sessions=" + std::to_string(_sessions.size()));
@@ -1997,6 +1995,71 @@ namespace
         }
 
     private:
+        void ensureSessionHostWindow(const std::shared_ptr<Session>& session, HWND parentHandle)
+        {
+            if (session->host && IsWindow(session->host))
+            {
+                attachSessionHostWindow(session->host, parentHandle);
+                session->browserParent = parentHandle;
+                return;
+            }
+
+            emitDiagnostic("session=" + session->id + " rebuilding-window-after-parent-exit");
+            if (session->xamlSource)
+            {
+                try
+                {
+                    session->xamlSource.Content(nullptr);
+                    session->xamlSource.Close();
+                }
+                catch (...)
+                {
+                    // The old XAML source can already be invalid after Windows destroys its parent HWND.
+                }
+            }
+
+            const auto hostWindow = createSessionHostWindow();
+            auto source = DesktopWindowXamlSource{};
+            const auto interop = source.as<IDesktopWindowXamlSourceNative>();
+            HWND islandWindow = nullptr;
+            try
+            {
+                winrt::check_hresult(interop->AttachToWindow(hostWindow));
+                winrt::check_hresult(interop->get_WindowHandle(&islandWindow));
+                ShowWindow(islandWindow, SW_HIDE);
+                attachSessionHostWindow(hostWindow, parentHandle);
+                source.Content(session->rootGrid);
+            }
+            catch (...)
+            {
+                try
+                {
+                    source.Content(nullptr);
+                    source.Close();
+                }
+                catch (...)
+                {
+                }
+                DestroyWindow(hostWindow);
+                throw;
+            }
+
+            RECT hostRect{};
+            GetClientRect(hostWindow, &hostRect);
+            SetWindowPos(
+                islandWindow,
+                nullptr,
+                0,
+                0,
+                hostRect.right - hostRect.left,
+                hostRect.bottom - hostRect.top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+            session->xamlSource = std::move(source);
+            session->host = hostWindow;
+            session->island = islandWindow;
+            session->browserParent = parentHandle;
+        }
+
         ITerminalConnection createConnection(const SessionRequest& request, const winrt::guid& sessionGuid)
         {
             const auto connectionFactory = _connectionModule.factory(connectionClassName);
