@@ -65,3 +65,11 @@ Decisions from the cockpit input-wrap grill. Not a spec.
 - **Chosen:** Fluent default light/dark (`webLightTheme` / `webDarkTheme`), switched with the app theme.
 - **Why:** User picked 2. Wants the stock Fluent look, not a remapped warm-paper skin.
 - **Rejected:** Map Fluent tokens onto `--bg` / `--accent`. Fluent Dark only.
+
+## Amendment 2026-08-20: flush XAML compose box
+
+Follow-on grill after Windows Terminal TermControl. Spec: `.scratch/wt-xaml-island/composer-flush-spec.md`.
+
+- **Chosen:** Keep covering the TUI editor. Composer is XAML in the island, not HTML. Bar is flush (margin 0, radius 0, top hairline). Taller single-line field, Enter sends, no send button. One wrapping chip row under it: folder, worktree, usage, model, thinking, MCP. Usage prefers fork usage chips, else context tokens. Leave Working visible. Native host parents to Chromium content HWND.
+- **Why:** User: terminal hole was offset; floating card was wrong; usage missing under the field; Linear compose look; HLSL does not replace the composer; React Linear library waits for a later Electron-shell swap.
+- **Rejected:** HLSL/shader UI. HTML overlay on the HWND. Stacked Electron composer under a shorter terminal. Floating rounded card. Multiline / Ctrl+Enter / send button. Covering Working. React component library in this cut.

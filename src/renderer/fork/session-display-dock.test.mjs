@@ -54,9 +54,33 @@ test("dock state projects session facts and picker choices without reading termi
     { label: "feature", value: "F:/repo-worktrees/feature" },
     { label: "other", value: "F:/other" },
   ]);
-  assert.deepEqual(state.worktreeChoices.map(({ label }) => label), ["main", "feature/native-dock"]);
-  assert.deepEqual(state.thinkingChoices.map(({ value }) => value), ["off", "medium", "high"]);
+  assert.deepEqual(
+    state.worktreeChoices.map(({ label }) => label),
+    ["main", "feature/native-dock"],
+  );
+  assert.deepEqual(
+    state.thinkingChoices.map(({ value }) => value),
+    ["off", "medium", "high"],
+  );
   assert.deepEqual(state.skillChoices, [{ label: "/review — Review current changes", value: "/review" }]);
+});
+
+test("dock usage joins every fork usage chip and keeps MCP separate", () => {
+  const state = buildSessionDisplayDockState({
+    session: { id: "sess-3", cwd: "F:/repo" },
+    context: {
+      model: null,
+      thinkingLevel: "auto",
+      messages: [{ role: "assistant", usage: { input: 1200, output: 300 } }],
+    },
+    statuses: [
+      { key: "pi-grok-usage", text: "SuperGrok 98%" },
+      { key: "usage", text: "74%" },
+      { key: "mcp", text: "MCP: 2 connected" },
+    ],
+  });
+  assert.equal(state.usageLabel, "SuperGrok 98% · 74%");
+  assert.equal(state.mcpLabel, "MCP: 2 connected");
 });
 
 test("dock usage falls back to context tokens when no usage chip exists", () => {

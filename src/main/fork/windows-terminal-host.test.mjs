@@ -47,8 +47,18 @@ test("native host mounts an IME TextBox overlay and submits one complete line", 
   assert.match(hostSource, /auto composer = TextBox\{\}/);
   assert.match(hostSource, /composerCard\.VerticalAlignment\(VerticalAlignment::Bottom\)/);
   assert.match(hostSource, /composerCard\.Margin\(Thickness\{ 0\.0, 0\.0, 0\.0, 0\.0 \}\)/);
-  assert.match(hostSource, /composerCard\.CornerRadius\(winrt::Windows::UI::Xaml::CornerRadius\{ 0\.0, 0\.0, 0\.0, 0\.0 \}\)/);
+  assert.match(
+    hostSource,
+    /composerCard\.CornerRadius\(winrt::Windows::UI::Xaml::CornerRadius\{ 0\.0, 0\.0, 0\.0, 0\.0 \}\)/,
+  );
   assert.match(hostSource, /composer\.Height\(52\.0\)/);
+  assert.match(hostSource, /composer\.AcceptsReturn\(false\)/);
+  assert.match(hostSource, /composerCard\.BorderThickness\(Thickness\{ 0\.0, 1\.0, 0\.0, 0\.0 \}\)/);
+  assert.match(
+    hostSource,
+    /dockRow\.Children\(\)\.Append\(cwdCombo\);[\s\S]*worktreeCombo[\s\S]*usageText[\s\S]*modelCombo[\s\S]*thinkingCombo[\s\S]*mcpText/,
+  );
+  assert.doesNotMatch(hostSource, /SendButton|Button\{\}/);
   assert.match(hostSource, /VariableSizedWrapGrid/);
   assert.match(hostSource, /Chrome_RenderWidgetHostHWND/);
   assert.match(hostSource, /args\.Handled\(true\)/);
