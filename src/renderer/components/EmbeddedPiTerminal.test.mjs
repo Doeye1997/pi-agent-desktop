@@ -27,3 +27,10 @@ test("session display keeps composer ownership native and does not overlay HTML 
   assert.doesNotMatch(source, /zIndex: 20/);
   assert.doesNotMatch(source, /xterm-helper-textarea/);
 });
+
+test("dock waits for worktrees and reuses the last list so the chip is not published empty", () => {
+  assert.match(source, /lastWorktreesRef/);
+  assert.match(source, /worktreesReady/);
+  assert.match(source, /listWorktrees\(projectKey\)/);
+  assert.match(source, /if \(!active \|\| selectedSessionId\.current !== session\.id \|\| !worktreesReady\) return/);
+});

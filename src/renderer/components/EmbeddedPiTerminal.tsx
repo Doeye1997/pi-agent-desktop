@@ -3,6 +3,7 @@ import type { SessionDisplayBounds, SessionDisplayError } from "@shared/session-
 import type { SessionInfo } from "@shared/types";
 import { call, getSession, listModels, listSessions, listWorktrees, relocateSession } from "@/lib/api-client";
 import {
+  WORKTREE_BRANCH_PICK_PREFIX,
   buildSessionDisplayDockState,
   inputForSessionDisplayAction,
   type SessionDisplayDockSources,
@@ -39,6 +40,11 @@ export function EmbeddedPiTerminal({
   const root = useRef<HTMLDivElement | null>(null);
   const selectedSessionId = useRef<string | null>(session?.id ?? null);
   const dockActionState = useRef({ currentThinking: "auto", thinkingLevels: [] as string[] });
+  const lastWorktreesRef = useRef<{
+    projectKey: string;
+    worktrees: NonNullable<SessionDisplayDockSources["worktrees"]>;
+    branches: string[];
+  } | null>(null);
   const [displayError, setDisplayError] = useState<SessionDisplayError | null>(null);
 
   useEffect(() => {
@@ -74,13 +80,28 @@ export function EmbeddedPiTerminal({
         return;
       }
       if (action.action === "relocate" && action.value) {
+        if (action.value.startsWith(WORKTREE_BRANCH_PICK_PREFIX)) {
+          const branch = action.value.slice(WORKTREE_BRANCH_PICK_PREFIX.length);
+          const projectRoot = session?.projectRoot ?? session?.cwd;
+          if (!branch || !projectRoot) return;
+          void call("worktrees.create", { projectRoot, cwd: projectRoot, branch })
+            .then((result) => relocate(result.worktree.path))
+            .catch((error) => {
+              setDisplayError({
+                code: "HOST_PROTOCOL_ERROR",
+                sessionId: action.sessionId,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            });
+          return;
+        }
         void relocate(action.value);
         return;
       }
       const input = inputForSessionDisplayAction(action, dockActionState.current);
       if (input) window.piBridge.writeSessionDisplay(action.sessionId, input);
     });
-  }, [onRelocated]);
+  }, [onRelocated, session]);
 
   useEffect(() => {
     window.piBridge.setSessionDisplayTheme(theme);
@@ -89,9 +110,18 @@ export function EmbeddedPiTerminal({
   useEffect(() => {
     if (!session) return;
     let active = true;
+    let live = false;
+    let contextTimer: number | undefined;
     const sources: SessionDisplayDockSources = { session };
+    const projectKey = session.projectRoot ?? session.cwd;
+    const cached = lastWorktreesRef.current;
+    if (cached && cached.projectKey === projectKey) {
+      sources.worktrees = cached.worktrees;
+      sources.branches = cached.branches;
+    }
+    let worktreesReady = Boolean(sources.worktrees);
     const publish = () => {
-      if (!active || selectedSessionId.current !== session.id) return;
+      if (!active || selectedSessionId.current !== session.id || !worktreesReady) return;
       const state = buildSessionDisplayDockState(sources);
       const currentModel = sources.context?.model;
       const modelKey = currentModel ? `${currentModel.provider}:${currentModel.modelId}` : "";
@@ -101,37 +131,6 @@ export function EmbeddedPiTerminal({
       };
       window.piBridge.setSessionDisplayDockState(session.id, state);
     };
-    publish();
-
-    void listSessions()
-      .then((result) => {
-        if (!active) return;
-        sources.sessions = result.sessions;
-        publish();
-      })
-      .catch(() => undefined);
-    void listWorktrees(session.projectRoot ?? session.cwd)
-      .then((result) => {
-        if (!active) return;
-        sources.worktrees = result.worktrees;
-        publish();
-      })
-      .catch(() => undefined);
-    void listModels(session.cwd)
-      .then((result) => {
-        if (!active) return;
-        sources.models = result;
-        publish();
-      })
-      .catch(() => undefined);
-    void call("skills.list", { cwd: session.cwd })
-      .then((result) => {
-        if (!active) return;
-        sources.skills = result.skills;
-        publish();
-      })
-      .catch(() => undefined);
-
     const refreshContext = () => {
       void getSession(session.id, true, undefined, { maxTurns: 8, maxBytes: 256 * 1024 })
         .then((result) => {
@@ -142,11 +141,58 @@ export function EmbeddedPiTerminal({
         })
         .catch(() => undefined);
     };
-    refreshContext();
-    const contextTimer = window.setInterval(refreshContext, 2_000);
+    const startLiveUpdates = () => {
+      if (!active || live) return;
+      live = true;
+      void listSessions()
+        .then((result) => {
+          if (!active) return;
+          sources.sessions = result.sessions;
+          publish();
+        })
+        .catch(() => undefined);
+      void listModels(session.cwd)
+        .then((result) => {
+          if (!active) return;
+          sources.models = result;
+          publish();
+        })
+        .catch(() => undefined);
+      void call("skills.list", { cwd: session.cwd })
+        .then((result) => {
+          if (!active) return;
+          sources.skills = result.skills;
+          publish();
+        })
+        .catch(() => undefined);
+      refreshContext();
+      contextTimer = window.setInterval(refreshContext, 2_000);
+    };
+    if (sources.worktrees) {
+      publish();
+      startLiveUpdates();
+    }
+    void listWorktrees(projectKey)
+      .then((result) => {
+        if (!active) return;
+        sources.worktrees = result.worktrees;
+        sources.branches = result.branches;
+        lastWorktreesRef.current = {
+          projectKey,
+          worktrees: result.worktrees,
+          branches: result.branches,
+        };
+      })
+      .catch(() => undefined)
+      .then(() => {
+        if (!active) return;
+        worktreesReady = true;
+        publish();
+        startLiveUpdates();
+      });
     return () => {
       active = false;
-      window.clearInterval(contextTimer);
+      if (contextTimer) window.clearInterval(contextTimer);
     };
   }, [session]);
 

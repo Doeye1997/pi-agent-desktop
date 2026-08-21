@@ -74,6 +74,7 @@ import {
   getGitStatus,
   isDirtyWorktreeError,
   listGitFiles,
+  listLocalBranches,
   listWorktrees,
   removeWorktree,
   resolveProject,
@@ -1081,15 +1082,19 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
       }
       const project = await resolveProject(projectRoot);
       let worktrees: Awaited<ReturnType<typeof listWorktrees>> = [];
+      let branches: string[] = [];
       let isGit = true;
+      const gitCwd = existsSync(projectRoot) ? projectRoot : project.projectRoot;
       try {
-        worktrees = await listWorktrees(existsSync(projectRoot) ? projectRoot : project.projectRoot);
+        worktrees = await listWorktrees(gitCwd);
+        branches = await listLocalBranches(gitCwd);
       } catch {
         isGit = false;
       }
       for (const w of worktrees) allowFileRoot(w.path);
       return {
         worktrees,
+        branches,
         projectRoot: project.projectRoot,
         isGit,
         isTopLevel: project.isTopLevel,

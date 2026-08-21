@@ -153,11 +153,19 @@ export function createSessionDisplayManager(options: {
       return;
     }
     if (event.type === "error") {
+      if (event.code === "INVALID_PARENT_WINDOW") {
+        options.onError?.(event);
+        return;
+      }
       reportError(event);
       if (event.sessionId) sessions.delete(event.sessionId);
       return;
     }
     const error = { code: event.code, message: event.message } satisfies SessionDisplayError;
+    if (event.code === "INVALID_PARENT_WINDOW") {
+      options.onError?.(error);
+      return;
+    }
     const sessionIds = [...sessions.keys()];
     if (sessionIds.length === 0) reportError(error);
     for (const sessionId of sessionIds) {
@@ -182,6 +190,27 @@ export function createSessionDisplayManager(options: {
     reportError(displayError);
     return { action: "error", sessionId };
   };
+
+  function attach(): void {
+    if (sessions.size === 0) return;
+    const parentWindowHandle = options.getParentWindowHandle();
+    if (!parentWindowHandle) return;
+    try {
+      ensureHost().attach(parentWindowHandle);
+    } catch (error) {
+      reportError(toDisplayError(error));
+    }
+  }
+
+  async function detach(): Promise<void> {
+    if (!host || sessions.size === 0) return;
+    try {
+      await host.detach();
+    } catch (error) {
+      reportError(toDisplayError(error));
+      throw error;
+    }
+  }
 
   function start(
     request: SessionDisplaySession,
@@ -329,5 +358,5 @@ export function createSessionDisplayManager(options: {
     return Object.fromEntries(marks);
   }
 
-  return { start, write, resize, setBounds, setTheme, setDockState, hide, kill, dispose, snapshotMarks };
+  return { attach, detach, start, write, resize, setBounds, setTheme, setDockState, hide, kill, dispose, snapshotMarks };
 }

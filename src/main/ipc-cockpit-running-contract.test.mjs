@@ -3,11 +3,19 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-const source = readFileSync(path.join(import.meta.dirname, "ipc.ts"), "utf8");
+const ipcSource = readFileSync(path.join(import.meta.dirname, "ipc.ts"), "utf8");
+const serviceSource = readFileSync(
+  path.join(import.meta.dirname, "../agent-host/session-display-service.ts"),
+  "utf8",
+);
 
-test("PTY-alive display marks do not union into sidebar runningSessionIds", () => {
-  assert.doesNotMatch(source, /setCockpitRunning\(sessionId, mark === "running"\)/);
-  assert.match(source, /onRunning\(sessionId, running\) \{\s*getHostManager\(\)\?\.setCockpitRunning\(sessionId, running\)/);
-  assert.match(source, /if \(mark === "dead"\) \{[\s\S]*setCockpitRunning\(sessionId, false\)/);
-  assert.match(source, /tuiRunning\.wrapProgram\(session\.program, session\.sessionId\)/);
+test("Agent Host owns TUI running marks while Electron only forwards display commands", () => {
+  assert.doesNotMatch(ipcSource, /createTuiRunningReporterChannel|tuiRunning\.wrapProgram/);
+  assert.match(ipcSource, /sendSessionDisplayCommand\(command\)/);
+  assert.match(
+    serviceSource,
+    /createTuiRunningReporterChannel\(\{[\s\S]*onRunning: options\.onRunning,[\s\S]*\}\)/,
+  );
+  assert.match(serviceSource, /program: tuiRunning\.wrapProgram\(command\.session\.program, command\.session\.sessionId\)/);
+  assert.match(serviceSource, /options\.onRunning\(sessionId, false\)/);
 });

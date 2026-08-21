@@ -19,6 +19,21 @@ function copyAsset(source, targetRoot, targetName = path.basename(source)) {
   return `${targetName} (${statSync(source).size} bytes)`;
 }
 
+function refreshAsset(source, targetRoot, targetName = path.basename(source)) {
+  const target = path.join(targetRoot, targetName);
+  try {
+    return copyAsset(source, targetRoot, targetName);
+  } catch (error) {
+    const targetIsLocked =
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error.code === "EBUSY" || error.code === "EPERM");
+    if (!targetIsLocked || !existsSync(target)) throw error;
+    return `${targetName} (kept existing locked asset)`;
+  }
+}
+
 function findWindowsAppCrtRoot() {
   const windowsRoot = process.env.SystemRoot?.trim();
   if (!windowsRoot) return undefined;
@@ -78,12 +93,12 @@ function main() {
     path.join(root, "native", "wt-xaml-island"),
   ].filter(Boolean);
   mkdirSync(stageRoot, { recursive: true });
-  copyAsset(firstExisting([hostSource], "pi-session-display-host.exe"), stageRoot, "pi-session-display-host.exe");
+  refreshAsset(firstExisting([hostSource], "pi-session-display-host.exe"), stageRoot, "pi-session-display-host.exe");
   const xamlApplicationRoot = firstExisting(
     xamlApplicationCandidates,
     "PI_WINDOWS_TERMINAL_XAML_APPLICATION_ROOT or extracted Microsoft.Toolkit.Win32.UI.XamlApplication 6.1.3",
   );
-  copyAsset(
+  refreshAsset(
     firstExisting(
       [path.join(xamlApplicationRoot, "Microsoft.Toolkit.Win32.UI.XamlHost.dll")],
       "Microsoft.Toolkit.Win32.UI.XamlHost.dll",
@@ -96,7 +111,7 @@ function main() {
     "PI_WINDOWS_TERMINAL_APP_CRT_ROOT or Windows App CRT",
   );
   for (const name of ["msvcp140_app.dll", "vcruntime140_app.dll", "vcruntime140_1_app.dll"]) {
-    copyAsset(firstExisting([path.join(appCrtRoot, name)], name), stageRoot, name);
+    refreshAsset(firstExisting([path.join(appCrtRoot, name)], name), stageRoot, name);
   }
   if (stagedAssetNames.every((name) => existsSync(path.join(stageRoot, name)))) {
     console.log(`[windows-terminal-host] existing staging is complete at ${stageRoot}`);

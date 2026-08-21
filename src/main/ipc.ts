@@ -26,10 +26,11 @@ import { BrowserError } from "./browser/browser-error";
 import {
   bundledPiCliPath,
   createLatestSessionDisplayStarter,
-  createSessionDisplayManager,
-  type SessionDisplayManager,
 } from "./fork/session-display";
-import { createTuiRunningReporterChannel } from "./fork/tui-running-protocol";
+import {
+  createRemoteSessionDisplayManager,
+  type RemoteSessionDisplayManager,
+} from "./fork/remote-session-display";
 import type { SessionDisplayAction, SessionDisplayDockState } from "../shared/session-display";
 import { isTrustedDesktopIpcSender } from "./ipc-trust";
 import type {
@@ -72,7 +73,7 @@ export type DesktopIpcOptions = {
   };
 };
 
-export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayManager {
+export function installDesktopIpc(options: DesktopIpcOptions): RemoteSessionDisplayManager {
   const {
     getHostManager,
     getMainWindow,
@@ -218,18 +219,12 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
     const handle = win.getNativeWindowHandle();
     return handle.length > 0 ? handle.toString("base64") : null;
   };
-  const tuiRunning = createTuiRunningReporterChannel({
-    onRunning(sessionId, running) {
-      getHostManager()?.setCockpitRunning(sessionId, running);
-    },
-  });
-  const sessionDisplayManager = createSessionDisplayManager({
+  const sessionDisplayManager = createRemoteSessionDisplayManager({
     getParentWindowHandle,
-    onMark(sessionId, mark) {
-      if (mark === "dead") {
-        tuiRunning.clear(sessionId);
-        getHostManager()?.setCockpitRunning(sessionId, false);
-      }
+    send(command) {
+      getHostManager()?.sendSessionDisplayCommand(command);
+    },
+    onMark(_sessionId, _mark) {
       emitSessionDisplayMarks();
     },
     onError(error) {
@@ -248,11 +243,7 @@ export function installDesktopIpc(options: DesktopIpcOptions): SessionDisplayMan
     resolveNodeExecutable,
     program: bundledPiCliPath,
     start: (session, remount) =>
-      sessionDisplayManager.start(
-        { ...session, program: tuiRunning.wrapProgram(session.program, session.sessionId) },
-        undefined,
-        remount,
-      ),
+      sessionDisplayManager.start(session, undefined, remount),
     onError(selected, error) {
       const message = error instanceof Error ? error.message : String(error);
       emitSessionDisplayError({

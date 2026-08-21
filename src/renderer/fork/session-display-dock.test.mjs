@@ -65,6 +65,53 @@ test("dock state projects session facts and picker choices without reading termi
   assert.deepEqual(state.skillChoices, [{ label: "/review — Review current changes", value: "/review" }]);
 });
 
+test("dock worktree label uses the matching worktree branch, including main checkouts", () => {
+  const main = buildSessionDisplayDockState({
+    session: { id: "sess-main", cwd: "F:/repo", projectRoot: "F:/repo" },
+    worktrees: [
+      { path: "F:/repo", branch: "main", isMain: true },
+      { path: "F:/repo-worktrees/feature", branch: "feature/x", isMain: false },
+    ],
+  });
+  assert.equal(main.worktreeLabel, "main");
+
+  const linked = buildSessionDisplayDockState({
+    session: { id: "sess-wt", cwd: "F:/repo-worktrees/feature", projectRoot: "F:/repo" },
+    worktrees: [
+      { path: "F:/repo", branch: "main", isMain: true },
+      { path: "F:/repo-worktrees/feature", branch: "feature/x", isMain: false },
+    ],
+  });
+  assert.equal(linked.worktreeLabel, "feature/x");
+
+  const unknown = buildSessionDisplayDockState({
+    session: { id: "sess-plain", cwd: "F:/Project/dlyzzt-pi-desktop" },
+  });
+  assert.equal(unknown.worktreeLabel, "");
+});
+
+test("dock worktree choices list every local branch and keep existing worktree paths", () => {
+  const state = buildSessionDisplayDockState({
+    session: {
+      id: "sess-1",
+      cwd: "F:/repo-worktrees/feature",
+      projectRoot: "F:/repo",
+      worktreeBranch: "feature/x",
+    },
+    worktrees: [
+      { path: "F:/repo", branch: "codex/fix-tui", isMain: true },
+      { path: "F:/repo-worktrees/feature", branch: "feature/x", isMain: false },
+    ],
+    branches: ["codex/fix-tui", "feature/x", "main"],
+  });
+  assert.equal(state.worktreeLabel, "feature/x");
+  assert.deepEqual(state.worktreeChoices, [
+    { label: "codex/fix-tui", value: "F:/repo" },
+    { label: "feature/x", value: "F:/repo-worktrees/feature" },
+    { label: "main", value: "__branch__:main" },
+  ]);
+});
+
 test("dock usage joins every fork usage chip and keeps MCP separate", () => {
   const state = buildSessionDisplayDockState({
     session: { id: "sess-3", cwd: "F:/repo" },

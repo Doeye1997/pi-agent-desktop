@@ -3,6 +3,7 @@ import type {
   SessionDisplayChoice,
   SessionDisplayDockState,
 } from "../../shared/session-display";
+import { worktreePathsEqual } from "../../shared/worktree-path.ts";
 import { forkUsageChips } from "./usage.ts";
 
 type DockSession = {
@@ -32,7 +33,10 @@ export type SessionDisplayDockSources = {
   context?: DockContext;
   skills?: Array<{ name: string; description?: string }>;
   statuses?: Array<{ key: string; text: string }>;
+  branches?: string[];
 };
+
+export const WORKTREE_BRANCH_PICK_PREFIX = "__branch__:";
 
 function pathLabel(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, "");
@@ -78,6 +82,37 @@ function titleCase(value: string): string {
   return value ? `${value[0].toUpperCase()}${value.slice(1)}` : "Auto";
 }
 
+function currentWorktreeLabel(
+  session: DockSession,
+  worktrees?: SessionDisplayDockSources["worktrees"],
+): string {
+  const match = worktrees?.find((worktree) => worktreePathsEqual(worktree.path, session.cwd));
+  if (match?.branch?.trim()) return match.branch.trim();
+  if (session.worktreeBranch?.trim()) return session.worktreeBranch.trim();
+  if (match?.isMain) return "main";
+  return "";
+}
+
+function buildWorktreeChoices(
+  worktrees?: SessionDisplayDockSources["worktrees"],
+  branches?: string[],
+): SessionDisplayChoice[] {
+  const pathByBranch = new Map<string, string>();
+  for (const worktree of worktrees ?? []) {
+    const branch = worktree.branch?.trim();
+    if (branch) pathByBranch.set(branch, worktree.path);
+  }
+  if ((branches ?? []).length === 0) {
+    return [...pathByBranch.entries()].map(([label, value]) => ({ label, value }));
+  }
+  const names = [...new Set([...(branches ?? []), ...pathByBranch.keys()])].filter(Boolean);
+  names.sort((left, right) => left.localeCompare(right));
+  return names.map((branch) => ({
+    label: branch,
+    value: pathByBranch.get(branch) ?? `${WORKTREE_BRANCH_PICK_PREFIX}${branch}`,
+  }));
+}
+
 export function buildSessionDisplayDockState(sources: SessionDisplayDockSources): SessionDisplayDockState {
   const currentModel = sources.context?.model;
   const currentModelInfo = currentModel
@@ -91,7 +126,7 @@ export function buildSessionDisplayDockState(sources: SessionDisplayDockSources)
 
   return {
     cwdLabel: pathLabel(sources.session.cwd),
-    worktreeLabel: sources.session.worktreeBranch || "Worktree",
+    worktreeLabel: currentWorktreeLabel(sources.session, sources.worktrees),
     usageLabel: contextUsageLabel(sources.context, sources.statuses),
     modelLabel: currentModelInfo?.name || currentModel?.modelId || "Model",
     thinkingLabel: titleCase(sources.context?.thinkingLevel || "auto"),
@@ -100,10 +135,7 @@ export function buildSessionDisplayDockState(sources: SessionDisplayDockSources)
       sources.session.cwd,
       ...(sources.sessions?.map((session) => session.cwd) ?? []),
     ]),
-    worktreeChoices: (sources.worktrees ?? []).map((worktree) => ({
-      label: worktree.branch || (worktree.isMain ? "main" : pathLabel(worktree.path)),
-      value: worktree.path,
-    })),
+    worktreeChoices: buildWorktreeChoices(sources.worktrees, sources.branches),
     modelChoices: (sources.models?.models ?? []).map((model) => ({
       label: model.name || model.id,
       value: `${model.provider}/${model.id}`,

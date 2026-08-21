@@ -7,8 +7,10 @@ import test from "node:test";
 import {
   TUI_RUNNING_REPORTER_SOURCE,
   createTuiRunningReporterChannel,
+  overlayDockUsage,
   readTuiRunningMark,
   tuiRunningMarkPath,
+  tuiUsageMarkPath,
   writeTuiRunningReporter,
 } from "./tui-running-protocol.ts";
 
@@ -19,6 +21,9 @@ test("reporter source writes agent-turn marks to a file, not PTY OSC", () => {
   assert.match(TUI_RUNNING_REPORTER_SOURCE, /agent_start/);
   assert.match(TUI_RUNNING_REPORTER_SOURCE, /agent_settled/);
   assert.match(TUI_RUNNING_REPORTER_SOURCE, /PI_DESKTOP_RUNNING_DIR/);
+  assert.match(TUI_RUNNING_REPORTER_SOURCE, /ctx\.ui\.setStatus/);
+  assert.match(TUI_RUNNING_REPORTER_SOURCE, /pi-grok-usage|grok\|usage/);
+  assert.match(TUI_RUNNING_REPORTER_SOURCE, /\.usage/);
   assert.doesNotMatch(TUI_RUNNING_REPORTER_SOURCE, /pi-desktop-running;/);
 });
 
@@ -51,6 +56,27 @@ test("mark watcher reports 1 then 0 for a live session id", async () => {
   writeFileSync(tuiRunningMarkPath(dir, sessionId), "0");
   await waitFor(() => seen.some((entry) => entry[0] === sessionId && entry[1] === false));
   assert.equal(readTuiRunningMark(dir, sessionId), false);
+  channel.clear(sessionId);
+  channel.dispose();
+});
+
+test("usage watcher overlays grok status onto dock state", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-tui-usage-"));
+  const seen = [];
+  const channel = createTuiRunningReporterChannel({
+    directory: dir,
+    onRunning() {},
+    onUsage(sessionId, usageLabel) {
+      seen.push([sessionId, usageLabel]);
+    },
+  });
+  const sessionId = "sess-usage";
+  writeFileSync(tuiUsageMarkPath(dir, sessionId), "SuperGrok 56.7% (7/20 14:00)");
+  await waitFor(() => seen.some((entry) => entry[0] === sessionId && entry[1].includes("SuperGrok")));
+  assert.equal(
+    overlayDockUsage({ usageLabel: "Usage —" }, "SuperGrok 56.7% (7/20 14:00)").usageLabel,
+    "SuperGrok 56.7% (7/20 14:00)",
+  );
   channel.clear(sessionId);
   channel.dispose();
 });

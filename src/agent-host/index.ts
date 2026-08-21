@@ -23,6 +23,11 @@ import { startSessionWatcher } from "./session-watcher";
 import { startStandaloneHostServer, type StandaloneHostServer } from "./standalone-host-server";
 import { installToolchainGitRunner } from "./toolchain-git";
 import { toolchainRuntime } from "./toolchain-runtime";
+import { createSessionDisplayService } from "./session-display-service";
+import type { SessionDisplayControlCommand, SessionDisplayControlRequest } from "../shared/session-display-control";
+import { installWindowsSafeWatch } from "./windows-safe-watch";
+
+installWindowsSafeWatch();
 
 const userDataDirectory = process.env.PI_DESKTOP_USER_DATA;
 if (!userDataDirectory) throw new Error("PI_DESKTOP_USER_DATA is required");
@@ -56,6 +61,11 @@ setBashChildListener((pid, alive) => {
 log(`HTTP idle timeout ${httpIdleTimeoutMs}ms`);
 
 const rpcServer = createRpcServer();
+const sessionDisplayService = createSessionDisplayService({
+  emit: (event) => postHostMessage({ type: "session-display-event", event }),
+  onRunning: setCockpitRunning,
+  onStateChanged: () => standaloneState.server?.notifyBusyChanged(),
+});
 const restoreGitRunner = installToolchainGitRunner();
 const stopHandlers = registerHandlers(rpcServer);
 const stopWatcher = startSessionWatcher(rpcServer);
@@ -66,6 +76,7 @@ async function stopResources(): Promise<void> {
   resourcesStopped = true;
   stopWatcher();
   restoreGitRunner();
+  sessionDisplayService.dispose();
   await stopHandlers();
 }
 
@@ -75,6 +86,10 @@ function handleMainControl(value: unknown): void {
     sessionId?: string;
     running?: boolean;
     snapshot?: ToolchainSnapshot | BrowserCapabilitySnapshot;
+    command?: SessionDisplayControlCommand;
+    request?: SessionDisplayControlRequest;
+    requestId?: string;
+    expectedHostVersion?: string;
   };
   if (message?.type === "host-rpc-result") {
     receiveMainControlMessage(message);
@@ -97,7 +112,37 @@ function handleMainControl(value: unknown): void {
     setCockpitRunning(sessionId, message.running === true);
     return;
   }
+  if (message?.type === "session-display" && message.command) {
+    const completion = sessionDisplayService.handle(message.command);
+    void Promise.resolve(completion)
+      .then(() => {
+        if (message.command?.type === "detach" && message.requestId) {
+          postHostMessage({ type: "session-display-detached", requestId: message.requestId });
+        }
+      })
+      .catch((error) => {
+        if (message.requestId) {
+          postHostMessage({
+            type: "session-display-detach-failed",
+            requestId: message.requestId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        log(`session-display ${message.command?.type ?? "unknown"} failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    return;
+  }
+  if (message?.type === "session-display-request" && message.request) {
+    void sessionDisplayService.execute(message.request).then((result) => {
+      postHostMessage({ type: "session-display-result", result });
+    });
+    return;
+  }
   if (message?.type === "replace-when-idle") {
+    log(
+      `replacement requested expected=${String(message.expectedHostVersion ?? "unknown")} current=${hostVersion}`,
+    );
     standaloneState.server?.requestExitWhenIdle();
     return;
   }
@@ -132,15 +177,22 @@ const standaloneServer = await startStandaloneHostServer({
   hostVersion,
   piVersion: piRuntimeVersion,
   rpcServer,
-  isBusy: () => getRunningSessionIds().length > 0,
+  isBusy: () => getRunningSessionIds().length > 0 || sessionDisplayService.hasLiveSessions(),
+  getSessionStates: () => sessionDisplayService.snapshotStates(),
   onControl: handleMainControl,
-  onMainDisconnected: () => receiveMainControlMessage({ type: "main-disconnected" }),
+  onMainDisconnected: () => {
+    void Promise.resolve(sessionDisplayService.handle({ type: "detach" })).catch((error) => {
+      log(`session-display detach after Main disconnect failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    receiveMainControlMessage({ type: "main-disconnected" });
+  },
   onExitRequested: async () => {
     await stopResources();
     setImmediate(() => process.exit(0));
   },
 });
 standaloneState.server = standaloneServer;
+sessionDisplayService.setGeneration(standaloneServer.generation);
 resolveStandaloneServer(standaloneServer);
 subscribeRunningSessions(() => standaloneServer.notifyBusyChanged());
 postHostMessage({ type: "ready", ts: Date.now(), piVersion: piRuntimeVersion });

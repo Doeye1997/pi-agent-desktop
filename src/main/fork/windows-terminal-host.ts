@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
@@ -21,6 +22,8 @@ export type SessionDisplayHostMount = {
 
 export type SessionDisplayHost = {
   mount: (request: SessionDisplayHostMount) => void;
+  attach: (parentWindowHandle: string) => void;
+  detach: () => Promise<void>;
   focus: (sessionId: string) => void;
   write: (sessionId: string, data: string) => void;
   resize: (sessionId: string, size: SessionDisplaySize) => void;
@@ -35,6 +38,8 @@ export type SessionDisplayHost = {
 
 type HostCommand =
   | { type: "mount"; request: SessionDisplayHostMount }
+  | { type: "attach"; parentWindowHandle: string }
+  | { type: "detach"; requestId: string }
   | { type: "focus"; sessionId: string }
   | { type: "write"; sessionId: string; data: string }
   | { type: "resize"; sessionId: string; size: SessionDisplaySize }
@@ -59,8 +64,13 @@ function isErrorCode(
   );
 }
 
-function parseHostEvent(line: string): SessionDisplayHostEvent {
+type ParsedHostEvent = SessionDisplayHostEvent | { type: "ack"; requestId: string };
+
+function parseHostEvent(line: string): ParsedHostEvent {
   const value = JSON.parse(line) as Record<string, unknown>;
+  if (value.type === "ack" && typeof value.requestId === "string" && value.requestId) {
+    return { type: "ack", requestId: value.requestId };
+  }
   if (
     value.type === "mark" &&
     typeof value.sessionId === "string" &&
@@ -105,14 +115,14 @@ function parseHostEvent(line: string): SessionDisplayHostEvent {
 
 export function resolveWindowsTerminalHostPath(
   env = process.env,
-  resourcesPath = process.resourcesPath,
+  resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "",
   cwd = process.cwd(),
 ): string | null {
   if (process.platform !== "win32") return null;
   const configured = env.PI_DESKTOP_WINDOWS_TERMINAL_HOST?.trim();
   const candidates = [
     configured,
-    join(resourcesPath, "wt-xaml-island", WINDOWS_TERMINAL_HOST_FILENAME),
+    resourcesPath ? join(resourcesPath, "wt-xaml-island", WINDOWS_TERMINAL_HOST_FILENAME) : undefined,
     join(cwd, "build", "toolchains", "windows-terminal", "win-x64", WINDOWS_TERMINAL_HOST_FILENAME),
     join(cwd, "native", "wt-xaml-island", WINDOWS_TERMINAL_HOST_FILENAME),
   ].filter((candidate): candidate is string => Boolean(candidate));
@@ -172,24 +182,64 @@ export function createWindowsTerminalHost(options: {
   };
   const output = createInterface({ input: child.stdout });
   const diagnostics = createInterface({ input: child.stderr });
+  const pendingDetaches = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
+  const rejectPendingDetaches = (error: Error): void => {
+    for (const pending of pendingDetaches.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    pendingDetaches.clear();
+  };
   output.on("line", (line) => {
     try {
-      options.onEvent(parseHostEvent(line));
+      const event = parseHostEvent(line);
+      if (event.type === "ack") {
+        const pending = pendingDetaches.get(event.requestId);
+        if (!pending) return;
+        pendingDetaches.delete(event.requestId);
+        clearTimeout(pending.timer);
+        pending.resolve();
+        return;
+      }
+      options.onEvent(event);
     } catch {
       reportHostError("HOST_PROTOCOL_ERROR", "Windows Terminal XAML host returned invalid event data");
     }
   });
   diagnostics.on("line", (line) => options.onDiagnostic?.(line));
   child.once("error", (error) => {
+    rejectPendingDetaches(error);
     reportHostError("HOST_EXITED", `Windows Terminal XAML host failed: ${error.message}`);
   });
   child.once("exit", (code) => {
+    rejectPendingDetaches(hostError("Windows Terminal XAML host exited before detach completed", "HOST_EXITED"));
     if (disposed) return;
     reportHostError("HOST_EXITED", `Windows Terminal XAML host exited with code ${code ?? "unknown"}`);
   });
 
   return {
     mount: (request) => sendCommand(child, { type: "mount", request }),
+    attach: (parentWindowHandle) => sendCommand(child, { type: "attach", parentWindowHandle }),
+    detach: () => {
+      const requestId = randomUUID();
+      return new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingDetaches.delete(requestId);
+          reject(hostError("Windows Terminal XAML host did not acknowledge detach", "HOST_PROTOCOL_ERROR"));
+        }, 2_000);
+        pendingDetaches.set(requestId, { resolve, reject, timer });
+        try {
+          sendCommand(child, { type: "detach", requestId });
+        } catch (error) {
+          clearTimeout(timer);
+          pendingDetaches.delete(requestId);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    },
     focus: (sessionId) => sendCommand(child, { type: "focus", sessionId }),
     write: (sessionId, data) => sendCommand(child, { type: "write", sessionId, data }),
     resize: (sessionId, size) => sendCommand(child, { type: "resize", sessionId, size }),
@@ -202,6 +252,7 @@ export function createWindowsTerminalHost(options: {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      rejectPendingDetaches(hostError("Windows Terminal XAML host disposed before detach completed", "HOST_EXITED"));
       output.close();
       diagnostics.close();
       if (child.stdin.writable) child.stdin.write(`${JSON.stringify({ type: "dispose" })}\n`);

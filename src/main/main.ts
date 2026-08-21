@@ -18,7 +18,7 @@ import { installDesktopIpc } from "./ipc";
 import { createCredentialRequestHandler, CredentialVault } from "./credential-vault";
 import { createProductionUpdateAdapter, isProductionUpdatePlatformEnabled } from "./update-adapter";
 import { createUpdateManager, redactUpdateError, type UpdateManager } from "./update-manager";
-import type { SessionDisplayManager } from "./fork/session-display";
+import type { RemoteSessionDisplayManager } from "./fork/remote-session-display";
 import { forkAllowOfficialUpdater } from "./fork/updates";
 import { ToolchainManager } from "./toolchains/manager";
 import { resolveRuntimeCatalogPath } from "./toolchains/catalog";
@@ -30,6 +30,7 @@ import { BrowserService } from "./browser/browser-service";
 import { findDesktopDeepLink, parseDesktopDeepLink } from "./deep-link";
 import { restartHostAfterExit } from "./host-install-recovery";
 import { assertHostReadyForUpdate, updateBlockingSessionCount } from "./host-update-policy";
+import { createQuitBarrier } from "./quit-barrier";
 
 // Must run before app ready
 registerAppProtocol();
@@ -46,10 +47,11 @@ if (isDev && process.env.PI_DESKTOP_DISABLE_GPU === "1") {
 }
 const packagedStartupValidation = app.isPackaged && process.argv.includes("--validate-packaged-startup");
 const expectedPiVersion = process.env.PI_DESKTOP_EXPECTED_PI_VERSION;
+const devRestartFile = isDev ? process.env.PI_DESKTOP_DEV_RESTART_FILE?.trim() : undefined;
 const TOOLCHAIN_FOCUS_RESCAN_TTL_MS = 60_000;
 
 let mainWindow: BrowserWindow | null = null;
-let sessionDisplayManager: SessionDisplayManager | null = null;
+let sessionDisplayManager: RemoteSessionDisplayManager | null = null;
 let hostManager: HostManager | null = null;
 let updateManager: UpdateManager | null = null;
 let toolchainManager: ToolchainManager | null = null;
@@ -171,6 +173,23 @@ function handleDeepLink(url: string): void {
 }
 
 function startMainProcess(): void {
+  const quitBarrier = createQuitBarrier({
+    detach: async () => {
+      if (hostManager?.getStatus() !== "ready") return;
+      await hostManager.detachSessionDisplays();
+      appendMainLog("session displays detached before Electron quit");
+    },
+    cleanup: async () => {
+      if (devRestartFile) fs.unwatchFile(devRestartFile);
+      sessionDisplayManager = null;
+      updateManager?.stopAutomaticChecks();
+      destroyTray();
+      await hostManager?.stop();
+      await browserService?.dispose();
+    },
+    quit: () => app.quit(),
+    log: appendMainLog,
+  });
   if (
     !acquireSingleInstanceLock(getMainWindow, (argv) => {
       const url = findDesktopDeepLink(argv);
@@ -179,6 +198,13 @@ function startMainProcess(): void {
   ) {
     app.quit();
     return;
+  }
+  if (devRestartFile) {
+    fs.watchFile(devRestartFile, { interval: 100 }, (current, previous) => {
+      if (current.mtimeMs === previous.mtimeMs || isQuitting) return;
+      appendMainLog("development restart requested");
+      app.quit();
+    });
   }
 
   app.on("open-url", (event, url) => {
@@ -420,6 +446,7 @@ function startMainProcess(): void {
     }
 
     hostManager = new HostManager(resolveHostEntry());
+    hostManager.setSessionDisplayEventListener((event) => sessionDisplayManager?.handleHostEvent(event));
     hostManager.setToolchainSnapshot(toolchainManager.getSnapshot());
     hostManager.setBrowserCapabilitySnapshot(browserService.getCapabilitySnapshot());
     const credentialRequestHandler = createCredentialRequestHandler(credentialVault);
@@ -518,13 +545,9 @@ function startMainProcess(): void {
     });
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     isQuitting = true;
-    sessionDisplayManager?.dispose();
-    updateManager?.stopAutomaticChecks();
-    destroyTray();
-    void hostManager?.stop();
-    void browserService?.dispose();
+    quitBarrier.handleBeforeQuit(event);
   });
 
   app.on("certificate-error", (event, webContents, url, _error, _certificate, callback) => {

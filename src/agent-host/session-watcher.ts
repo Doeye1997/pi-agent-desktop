@@ -7,7 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { RpcServer } from "../contract/rpc";
 import { invalidateAllowedRootsCache, setAllowedRootsWatcherHealthy } from "./file-access";
 import { sessionIndex } from "./session-index";
-import { classifySessionWatchChange } from "./session-watch-policy";
+import { classifySessionWatchChange, sessionWatchTargets } from "./session-watch-policy";
 
 export function startSessionWatcher(server: RpcServer): () => void {
   let agentDir: string;
@@ -26,6 +26,11 @@ export function startSessionWatcher(server: RpcServer): () => void {
   }
 
   const sessionsRoot = path.resolve(process.env.PI_CODING_AGENT_SESSION_DIR || path.join(agentDir, "sessions"));
+  try {
+    fs.mkdirSync(sessionsRoot, { recursive: true });
+  } catch {
+    return () => {};
+  }
   const changedPaths = new Set<string>();
   let fullRefreshRequired = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -70,26 +75,58 @@ export function startSessionWatcher(server: RpcServer): () => void {
     }, 300);
   };
 
-  let watcher: fs.FSWatcher | null = null;
-  try {
-    watcher = fs.watch(agentDir, { recursive: true }, (_event, filename) => {
-      const change = classifySessionWatchChange(agentDir, sessionsRoot, filename);
+  const watchers = new Map<string, fs.FSWatcher>();
+  const watchDirectory = (directory: string) => {
+    if (watchers.has(directory)) return;
+    const watcher = fs.watch(directory, { recursive: false }, (_event, filename) => {
+      if (directory === sessionsRoot) {
+        try {
+          syncSessionDirectoryWatchers();
+        } catch (error) {
+          console.error("[agent-host] session watcher rescan failed:", error);
+        }
+      }
+      const change = classifySessionWatchChange(agentDir, sessionsRoot, filename, directory);
       if (change.kind === "refresh-path") debounce(change.path);
-      else if (change.kind === "refresh-all") debounce();
+      else if (change.kind === "refresh-all" || directory === sessionsRoot) debounce();
     });
     watcher.on("error", (err) => {
       console.error("[agent-host] session watcher error:", err);
       setAllowedRootsWatcherHealthy(false);
       invalidateAllowedRootsCache();
     });
+    watchers.set(directory, watcher);
+  };
+  const syncSessionDirectoryWatchers = () => {
+    const sessionDirectories = new Set(
+      fs
+        .readdirSync(sessionsRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(sessionsRoot, entry.name)),
+    );
+    for (const directory of sessionDirectories) watchDirectory(directory);
+    for (const [directory, watcher] of watchers) {
+      if (path.dirname(directory) !== sessionsRoot || sessionDirectories.has(directory)) continue;
+      watcher.close();
+      watchers.delete(directory);
+    }
+  };
+  try {
+    for (const target of sessionWatchTargets(agentDir, sessionsRoot)) {
+      watchDirectory(target.directory);
+    }
+    syncSessionDirectoryWatchers();
     setAllowedRootsWatcherHealthy(true);
   } catch (err) {
+    for (const watcher of watchers.values()) watcher.close();
+    watchers.clear();
     console.error("[agent-host] session watcher failed:", err);
   }
 
   return () => {
     if (timer) clearTimeout(timer);
-    watcher?.close();
+    for (const watcher of watchers.values()) watcher.close();
+    watchers.clear();
     setAllowedRootsWatcherHealthy(false);
   };
 }
