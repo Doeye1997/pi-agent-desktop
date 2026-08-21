@@ -59,7 +59,10 @@ test("native host mounts an IME TextBox overlay and submits one complete line", 
     /dockRow\.Children\(\)\.Append\(cwdCombo\);[\s\S]*worktreeCombo[\s\S]*usageText[\s\S]*modelCombo[\s\S]*thinkingCombo[\s\S]*mcpText/,
   );
   assert.doesNotMatch(hostSource, /SendButton|Button\{\}/);
-  assert.match(hostSource, /VariableSizedWrapGrid/);
+  assert.match(hostSource, /Grid::SetColumn\(usageText, 2\)/);
+  assert.doesNotMatch(hostSource, /VariableSizedWrapGrid/);
+  assert.match(hostSource, /selectedIndex < 0 && !currentLabel.empty\(\) && label == currentLabel/);
+  assert.match(hostSource, /combo\.Items\(\)\.InsertAt\(0, current\)/);
   assert.match(hostSource, /Chrome_RenderWidgetHostHWND/);
   assert.match(hostSource, /args\.Handled\(true\)/);
   assert.match(hostSource, /payload\.push_back\(u'\\r'\)/);
@@ -69,6 +72,25 @@ test("native host mounts an IME TextBox overlay and submits one complete line", 
   assert.ok(writeIndex >= 0);
   assert.ok(clearIndex > writeIndex);
   assert.match(hostSource, /termControl\.PointerPressed\([\s\S]*Focus\(FocusState::Pointer\)/);
+});
+
+test("native host skill picker stays in-tree and filters slash input", () => {
+  const hostSourcePath = fileURLToPath(
+    new URL("../../../native/wt-xaml-island/pi-session-display-host.cpp", import.meta.url),
+  );
+  const hostSource = readFileSync(hostSourcePath, "utf8");
+
+  assert.doesNotMatch(hostSource, /MenuFlyout/);
+  assert.doesNotMatch(hostSource, /ListView/);
+  assert.match(hostSource, /auto skillPicker = ScrollViewer\{\}/);
+  assert.match(hostSource, /AllowFocusOnInteraction\(false\)/);
+  assert.match(hostSource, /keepComposerFocused/);
+  assert.match(hostSource, /std::optional<std::wstring> slashQuery/);
+  assert.match(hostSource, /VirtualKey::Down/);
+  assert.match(hostSource, /applySelectedSkill/);
+  assert.match(hostSource, /composerStack\.Children\(\)\.Append\(skillPickerChrome\)/);
+  assert.match(hostSource, /splitSkillLabel/);
+  assert.match(hostSource, /pickerRowActive/);
 });
 
 test("native TermControl keeps Ctrl+C interrupt semantics while supporting selection copy and paste", () => {
@@ -83,4 +105,26 @@ test("native TermControl keeps Ctrl+C interrupt semantics while supporting selec
   assert.match(hostSource, /CopySelectionToClipboard\(true, false, false, CopyFormat::None\)/);
   assert.match(hostSource, /return _control\.CopySelectionToClipboard\(/);
   assert.match(hostSource, /VirtualKey::V[\s\S]*PasteTextFromClipboard\(\)[\s\S]*return true/);
+});
+
+test("native host parks sessions across Electron replacement and reparents them without respawning Pi", () => {
+  const hostSourcePath = fileURLToPath(
+    new URL("../../../native/wt-xaml-island/pi-session-display-host.cpp", import.meta.url),
+  );
+  const hostSource = readFileSync(hostSourcePath, "utf8");
+
+  assert.match(hostSource, /void detachSessionHostWindow\(HWND window, HWND parkingWindow\)/);
+  assert.match(hostSource, /SetParent\(window, parkingWindow\)/);
+  assert.match(hostSource, /_parkingWindow = createSessionHostWindow\(\)/);
+  assert.match(hostSource, /else if \(type == L"detach"\)[\s\S]*host\.detach\(\)/);
+  assert.match(hostSource, /else if \(type == L"attach"\)[\s\S]*host\.attach/);
+  assert.match(
+    hostSource,
+    /if \(find\(request\.sessionId\)\)[\s\S]*attachSessionHostWindow\(session->host,[\s\S]*focus\(request\.sessionId\)/,
+  );
+  assert.match(hostSource, /isInvalidParentWindowFailure[\s\S]*type == L"attach" \|\| type == L"bounds"/);
+  assert.match(hostSource, /attachSessionHostWindow\(session->host, parentHandle\)/);
+  assert.match(hostSource, /electronContentOrigin\(session->browserParent\)/);
+  assert.match(hostSource, /x \+ contentOrigin\.x[\s\S]*y \+ contentOrigin\.y/);
+  assert.match(hostSource, /host\.detach\(\);[\s\S]*emitAck\(namedString\(command, L"requestId"\)\)/);
 });
