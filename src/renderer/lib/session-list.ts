@@ -15,7 +15,8 @@ export function resolveInitialSessionRestore(
   if (loading || hasLoadError) return { status: "wait" };
   if (!initialSessionId || alreadyRestored) return { status: "none" };
   const session = sessions.find((item) => item.id === initialSessionId);
-  return session ? { status: "restore", session } : { status: "not-found" };
+  if (!session || session.archived) return { status: "not-found" };
+  return { status: "restore", session };
 }
 
 export function getSessionDisplayTitle(session: SessionInfo, maxLength = 72): string {

@@ -20,6 +20,12 @@ test("cockpit renders the native session display without an HTML worktree overla
   assert.doesNotMatch(source, /worktreeAnchorRef=\{setWorktreeSlot\}/);
 });
 
+test("archive kills that session display without selecting archived sessions", () => {
+  assert.match(source, /if \(session\.archived\) return;/);
+  assert.match(source, /forkOnKillSession\(sessionId\)/);
+  assert.match(source, /onSessionArchived=\{handleSessionArchived\}/);
+});
+
 test("relocation remounts the active terminal and defers a background remount until selection", () => {
   assert.match(source, /onSessionRelocated=\{handleSessionRelocated\}/);
   assert.match(source, /relocatedSessionsRef\.current\.set\(session\.id, session\)/);

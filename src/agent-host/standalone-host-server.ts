@@ -100,7 +100,6 @@ export async function startStandaloneHostServer(options: StandaloneHostServerOpt
   const clientPorts = new Map<JsonLinePeer, Map<string, WireMessagePort>>();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
-  let acceptedClient = false;
   let exitRequested = false;
   let exitWhenIdle = false;
   let activeClient: JsonLinePeer | undefined;
@@ -125,7 +124,9 @@ export async function startStandaloneHostServer(options: StandaloneHostServerOpt
   const scheduleIdleExit = () => {
     if (idleTimer) clearTimeout(idleTimer);
     if ((!exitWhenIdle && clients.size > 0) || options.isBusy()) return;
-    const delay = acceptedClient ? (options.idleExitDelayMs ?? 250) : (options.startupGraceMs ?? 30_000);
+    // Electron reconnect (rebuild / window blip) is slower than 250ms. Keep the
+    // startup grace unless a version replacement explicitly asked to exit idle.
+    const delay = exitWhenIdle ? (options.idleExitDelayMs ?? 250) : (options.startupGraceMs ?? 30_000);
     idleTimer = setTimeout(() => {
       idleTimer = undefined;
       if ((exitWhenIdle || clients.size === 0) && !options.isBusy()) void requestExit();
@@ -157,7 +158,6 @@ export async function startStandaloneHostServer(options: StandaloneHostServerOpt
           return;
         }
         authenticated = true;
-        acceptedClient = true;
         clients.add(peer);
         activeClient = peer;
         if (idleTimer) clearTimeout(idleTimer);

@@ -1,7 +1,13 @@
 export { forkStatusBarStatuses, forkUsageChips, isForkUsageChip, type ForkStatusChip } from "./usage";
 export { ForkUsageChips } from "./UsageChips";
 export { forkNoticeDurationMs, forkNoticeItemStyle, forkNoticeMessageStyle } from "./notices";
-export { filterSessionsForSidebar, groupSessionsByProject, sessionProjectLabel, sessionProjectRoot } from "./sessions";
+export {
+  filterSessionsForSidebar,
+  groupSessionsByProject,
+  nextLiveSessionAfterArchive,
+  sessionProjectLabel,
+  sessionProjectRoot,
+} from "./sessions";
 export { useForkSessionList } from "./useForkSessionList";
 export { readCockpitRole, shouldCollapseSidebarAfterSessionPick, type CockpitRole } from "./cockpit";
 export { forkOnNewSession, forkOnSelectSession } from "./session-tui-select";

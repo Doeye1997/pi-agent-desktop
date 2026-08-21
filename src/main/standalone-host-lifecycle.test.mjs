@@ -115,3 +115,32 @@ test("Electron-only Host work returns structured unavailable after its reconnect
     (error) => error.code === "ELECTRON_MAIN_UNAVAILABLE" && error.retryable === true && error.details?.waitedMs === 10,
   );
 });
+
+test("idle Host waits for Electron reconnect instead of exiting after the replacement delay", async (t) => {
+  const userDataDirectory = mkdtempSync(path.join(tmpdir(), "pi-standalone-host-reconnect-"));
+  let exited = false;
+  const server = await startStandaloneHostServer({
+    userDataDirectory,
+    hostVersion: "fixture",
+    rpcServer: createRpcServer(),
+    isBusy: () => false,
+    idleExitDelayMs: 50,
+    startupGraceMs: 400,
+    onExitRequested: () => {
+      exited = true;
+    },
+  });
+  t.after(async () => {
+    await server.close();
+    rmSync(userDataDirectory, { recursive: true, force: true });
+  });
+
+  const connection = await connectStandaloneHost(userDataDirectory);
+  connection.close();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(exited, false, "Host must survive a short Electron disconnect without work");
+
+  const reconnected = await connectStandaloneHost(userDataDirectory);
+  assert.equal(reconnected.pid, process.pid);
+  reconnected.close();
+});

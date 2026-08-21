@@ -81,3 +81,9 @@ test("initial session restore returns the matching session", () => {
     session: target,
   });
 });
+
+test("initial session restore does not open an archived session", () => {
+  assert.deepEqual(resolveInitialSessionRestore([session("old", { archived: true })], "old", false, false, false), {
+    status: "not-found",
+  });
+});

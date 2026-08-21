@@ -1,4 +1,8 @@
-export function forkOnSelectSession(session: { id?: string; path?: string; cwd?: string }, remount = false): void {
+export function forkOnSelectSession(
+  session: { id?: string; path?: string; cwd?: string; archived?: boolean },
+  remount = false,
+): void {
+  if (session.archived) return;
   const sessionId = session.id?.trim();
   const sessionPath = session.path?.trim();
   const cwd = session.cwd?.trim();
