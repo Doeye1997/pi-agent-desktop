@@ -69,7 +69,7 @@ Relevant implementation:
 
 - [`scripts/prepare-windows-terminal-host.mjs`](../../../scripts/prepare-windows-terminal-host.mjs) defines the complete asset manifest, copies the nested XBF files, and creates nested target directories.
 - [`pi-session-display-host.cpp`](../../../native/wt-xaml-island/pi-session-display-host.cpp) reports the failure at the `CreateInstance2` boundary.
-- [`windows-terminal-host.test.mjs`](../../../src/main/fork/windows-terminal-host.test.mjs) guards the two nested resource paths.
+- [`windows-terminal-host.test.mjs`](../../../src/agent-host/fork/windows-terminal-host.test.mjs) guards the two nested resource paths.
 
 After restoring the nested directory, the native HWND smoke passed the `CreateInstance2` boundary, emitted connection-state transitions and process-start, and exited cleanly after disposal.
 

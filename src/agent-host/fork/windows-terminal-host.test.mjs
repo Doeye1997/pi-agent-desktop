@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { resolveWindowsTerminalHostPath, WINDOWS_TERMINAL_HOST_FILENAME } from "./windows-terminal-host.ts";
+import {
+  resolveWindowsTerminalHostPath,
+  WINDOWS_TERMINAL_HOST_FILENAME,
+} from "../../shared/windows-terminal-host-path.ts";
 
 test("development resolution prefers the complete Windows Terminal staging directory", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-wt-host-"));

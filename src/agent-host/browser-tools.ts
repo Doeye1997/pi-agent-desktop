@@ -1,49 +1,56 @@
 import { randomUUID } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type {
-  BrowserHostMethod,
-  BrowserHostParams,
-  BrowserHostResult,
-  BrowserPermissionLevel,
-  BrowserCapabilitySnapshot,
+import {
+  browserPermissionForMethod,
+  type BrowserAutomationMethod,
+  type BrowserHostParams,
+  type BrowserHostResult,
+  type BrowserPermissionLevel,
+  type BrowserCapabilitySnapshot,
 } from "../contract/browser";
 import { callMain } from "./parent-rpc";
 import { BROWSER_CANONICAL_GUIDELINES, browserAgentRuntime } from "./browser-agent-runtime";
 
-export const BROWSER_TOOL_PERMISSIONS = {
-  browser_open: "read",
-  browser_list_tabs: "read",
-  browser_navigate: "read",
-  browser_snapshot: "read",
-  browser_inspect: "read",
-  browser_screenshot: "read",
-  browser_visual_compare: "read",
-  browser_click: "interact",
-  browser_click_at: "interact",
-  browser_type: "interact",
-  browser_press: "interact",
-  browser_scroll: "interact",
-  browser_wait: "read",
-  browser_back: "read",
-  browser_forward: "read",
-  browser_reload: "read",
-  browser_close: "read",
-  browser_execute_javascript: "advanced",
-  browser_get_cookies: "advanced",
-  browser_set_request_header_rules: "advanced",
-  browser_set_response_header_rules: "advanced",
-  browser_send_cdp_command: "advanced",
-  browser_network_list: "advanced",
-  browser_network_wait: "advanced",
-  browser_network_body: "advanced",
-  browser_network_replay: "advanced",
-  browser_network_summary: "advanced",
-  browser_console_list: "advanced",
-  browser_console_wait: "advanced",
-  browser_page_code_list: "advanced",
-  browser_page_code_get: "advanced",
-} as const satisfies Record<string, BrowserPermissionLevel>;
+const BROWSER_TOOL_METHODS = {
+  browser_open: "browser.open",
+  browser_list_tabs: "browser.listTabs",
+  browser_navigate: "browser.navigate",
+  browser_snapshot: "browser.snapshot",
+  browser_inspect: "browser.inspect",
+  browser_screenshot: "browser.screenshot",
+  browser_visual_compare: "browser.visualCompare",
+  browser_click: "browser.click",
+  browser_click_at: "browser.clickAt",
+  browser_type: "browser.type",
+  browser_press: "browser.press",
+  browser_scroll: "browser.scroll",
+  browser_wait: "browser.wait",
+  browser_back: "browser.back",
+  browser_forward: "browser.forward",
+  browser_reload: "browser.reload",
+  browser_close: "browser.close",
+  browser_execute_javascript: "browser.executeJavaScript",
+  browser_get_cookies: "browser.getCookies",
+  browser_set_request_header_rules: "browser.setRequestHeaderRules",
+  browser_set_response_header_rules: "browser.setResponseHeaderRules",
+  browser_send_cdp_command: "browser.sendCdpCommand",
+  browser_network_list: "browser.networkList",
+  browser_network_wait: "browser.networkWait",
+  browser_network_body: "browser.networkBody",
+  browser_network_replay: "browser.networkReplay",
+  browser_network_summary: "browser.networkSummary",
+  browser_console_list: "browser.consoleList",
+  browser_console_wait: "browser.consoleWait",
+  browser_page_code_list: "browser.pageCodeList",
+  browser_page_code_get: "browser.pageCodeGet",
+} as const satisfies Record<string, BrowserAutomationMethod>;
+
+type BrowserToolName = keyof typeof BROWSER_TOOL_METHODS;
+
+export const BROWSER_TOOL_PERMISSIONS = Object.fromEntries(
+  Object.entries(BROWSER_TOOL_METHODS).map(([name, method]) => [name, browserPermissionForMethod(method)]),
+) as Readonly<{ [Name in BrowserToolName]: Exclude<BrowserPermissionLevel, "none"> }>;
 
 export const BROWSER_TOOL_NAMES = Object.keys(BROWSER_TOOL_PERMISSIONS) as Array<keyof typeof BROWSER_TOOL_PERMISSIONS>;
 const BROWSER_TOOL_NAME_SET = new Set<string>(BROWSER_TOOL_NAMES);
@@ -72,12 +79,7 @@ export function setBrowserSessionSource(sessionManager: object, source: "local" 
   browserSessionSources.set(sessionManager, source);
 }
 
-async function browserCall<
-  M extends Exclude<
-    BrowserHostMethod,
-    "browser.capabilities" | "browser.requestAuthorization" | "browser.sessionEnded" | "browser.requestRouteBypass"
-  >,
->(
+async function browserCall<M extends BrowserAutomationMethod>(
   method: M,
   params: Omit<BrowserHostParams<M>, "sessionId" | "capabilityLeaseId" | "policyRevision" | "requestId">,
   ctx: ToolContext,
@@ -86,7 +88,7 @@ async function browserCall<
   const sessionId = ctx.sessionManager.getSessionId();
   const requestId = randomUUID();
   let capabilities = await callMain<BrowserHostResult<"browser.capabilities">>("browser.capabilities", { sessionId });
-  const required = requiredPermissionForHostMethod(method);
+  const required = browserPermissionForMethod(method);
   if (!capabilities.lease || permissionRank(capabilities.lease.permission) < permissionRank(required)) {
     await callMain<BrowserHostResult<"browser.requestAuthorization">>(
       "browser.requestAuthorization",
@@ -152,14 +154,11 @@ function textResult(value: unknown, sessionId?: string) {
   };
 }
 
-function tool(
-  name: keyof typeof BROWSER_TOOL_PERMISSIONS,
+function tool<Name extends BrowserToolName>(
+  name: Name,
   description: string,
   parameters: ReturnType<typeof Type.Object>,
-  method: Exclude<
-    BrowserHostMethod,
-    "browser.capabilities" | "browser.requestAuthorization" | "browser.sessionEnded" | "browser.requestRouteBypass"
-  >,
+  method: (typeof BROWSER_TOOL_METHODS)[Name],
   project: (input: Record<string, unknown>) => Record<string, unknown> = (input) => input,
 ): ToolDefinition {
   return defineTool({
@@ -179,43 +178,6 @@ function tool(
 
 function permissionRank(permission: BrowserPermissionLevel): number {
   return { none: 0, read: 1, interact: 2, advanced: 3 }[permission];
-}
-
-function requiredPermissionForHostMethod(
-  method: Exclude<
-    BrowserHostMethod,
-    "browser.capabilities" | "browser.requestAuthorization" | "browser.sessionEnded" | "browser.requestRouteBypass"
-  >,
-): Exclude<BrowserPermissionLevel, "none"> {
-  if (
-    method === "browser.click" ||
-    method === "browser.clickAt" ||
-    method === "browser.type" ||
-    method === "browser.press" ||
-    method === "browser.scroll"
-  ) {
-    return "interact";
-  }
-  if (
-    method === "browser.executeJavaScript" ||
-    method === "browser.getCookies" ||
-    method === "browser.setCookies" ||
-    method === "browser.setRequestHeaderRules" ||
-    method === "browser.setResponseHeaderRules" ||
-    method === "browser.sendCdpCommand" ||
-    method === "browser.networkList" ||
-    method === "browser.networkWait" ||
-    method === "browser.networkBody" ||
-    method === "browser.networkReplay" ||
-    method === "browser.networkSummary" ||
-    method === "browser.consoleList" ||
-    method === "browser.consoleWait" ||
-    method === "browser.pageCodeList" ||
-    method === "browser.pageCodeGet"
-  ) {
-    return "advanced";
-  }
-  return "read";
 }
 
 const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -499,8 +461,8 @@ export function createBrowserToolDefinitions(): ToolDefinition[] {
       }),
       "browser.getCookies",
     ),
-    headerRuleTool("browser_set_request_header_rules", "browser.setRequestHeaderRules"),
-    headerRuleTool("browser_set_response_header_rules", "browser.setResponseHeaderRules"),
+    headerRuleTool("browser_set_request_header_rules"),
+    headerRuleTool("browser_set_response_header_rules"),
     tool(
       "browser_send_cdp_command",
       "Advanced Browser Mode: send a Chrome DevTools Protocol command.",
@@ -620,7 +582,6 @@ export function createBrowserToolDefinitions(): ToolDefinition[] {
 
 function headerRuleTool(
   name: "browser_set_request_header_rules" | "browser_set_response_header_rules",
-  method: "browser.setRequestHeaderRules" | "browser.setResponseHeaderRules",
 ): ToolDefinition {
   return tool(
     name,
@@ -642,7 +603,7 @@ function headerRuleTool(
         { maxItems: 100 },
       ),
     }),
-    method,
+    BROWSER_TOOL_METHODS[name],
   );
 }
 

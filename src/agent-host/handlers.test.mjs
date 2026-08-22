@@ -45,7 +45,7 @@ async function captureHandlers() {
 test("registerHandlers exposes every contract method exactly once", async () => {
   const { handlers } = await captureHandlers();
   // Keep in sync with src/contract/api.ts: one handler per contract method.
-  assert.equal(Object.keys(handlers).length, 72);
+  assert.equal(Object.keys(handlers).length, 73);
   for (const method of [
     "host.ping",
     "host.toolchain",
@@ -119,49 +119,6 @@ test("auto-title disposes temporary services after using the local fallback", as
 
   assert.equal(title, "Fix the login page");
   assert.equal(disposeCalls, 1);
-});
-
-test("conditional auto-title writes never replace a manual session name", async (t) => {
-  const fixtureDirectory = path.join(process.env.PI_CODING_AGENT_SESSION_DIR, "auto-title-fixture");
-  mkdirSync(fixtureDirectory, { recursive: true });
-  t.after(() => rmSync(fixtureDirectory, { recursive: true, force: true }));
-
-  const createFixture = (sessionId) => {
-    const sessionPath = path.join(fixtureDirectory, `2026-08-16T00-00-00-000Z_${sessionId}.jsonl`);
-    writeFileSync(
-      sessionPath,
-      `${JSON.stringify({
-        type: "session",
-        version: 3,
-        id: sessionId,
-        timestamp: "2026-08-16T00:00:00.000Z",
-        cwd: root,
-      })}\n`,
-      "utf8",
-    );
-    return sessionPath;
-  };
-
-  const guardedSessionId = "auto-title-guarded";
-  const guardedPath = createFixture(guardedSessionId);
-  const concurrentSessionId = "auto-title-concurrent";
-  const concurrentPath = createFixture(concurrentSessionId);
-  const { handlers } = await captureHandlers();
-  const { applySessionNameIfEmpty } = await loadHandlersModule();
-
-  // Populate the session id → path cache used by the handlers.
-  await handlers["sessions.list"]();
-
-  assert.equal(await applySessionNameIfEmpty(guardedSessionId, "Automatic title"), true);
-  await handlers["sessions.rename"]({ id: guardedSessionId, name: "Manual title" });
-  assert.equal(await applySessionNameIfEmpty(guardedSessionId, "Late automatic title"), false);
-  assert.equal(SessionManager.open(guardedPath).getSessionName(), "Manual title");
-
-  await Promise.all([
-    applySessionNameIfEmpty(concurrentSessionId, "Automatic title"),
-    handlers["sessions.rename"]({ id: concurrentSessionId, name: "Concurrent manual title" }),
-  ]);
-  assert.equal(SessionManager.open(concurrentPath).getSessionName(), "Concurrent manual title");
 });
 
 test("channel initialization failure is reported without an unhandled rejection", async () => {

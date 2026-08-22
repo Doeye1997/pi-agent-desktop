@@ -21,7 +21,7 @@ import type {
 } from "../shared/session-display-control";
 import { appendMainLog } from "./logger";
 import { connectStandaloneHost, readHostDiscovery, type StandaloneHostConnection } from "./standalone-host-client";
-import { resolveWindowsTerminalHostPath } from "./fork/windows-terminal-host";
+import { resolveWindowsTerminalHostPath } from "../shared/windows-terminal-host-path.ts";
 
 const PING_INTERVAL_MS = 15_000;
 const PING_TIMEOUT_MS = 10_000;

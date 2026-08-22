@@ -3,7 +3,6 @@ import {
   buildSessionContext as piBuildSessionContext,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
 import type {
   AgentMessage,
   ChannelMessageAttachment,
@@ -15,7 +14,6 @@ import type {
 import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } from "@earendil-works/pi-coding-agent";
 import { normalizeToolCalls } from "../shared/normalize";
 import { resolveProject, type ProjectInfo } from "../shared/worktree";
-import { forkSessionInfoPatch } from "../shared/session-archive";
 import { sessionIndex } from "./session-index";
 
 export { getAgentDir };
@@ -45,10 +43,8 @@ async function listAllSessionsFallback(): Promise<SessionInfo[]> {
     }),
   );
 
-  const cache = getPathCache();
   return piSessions.map((s) => {
-    // Populate path cache so resolveSessionPath works without a full scan
-    cache.set(s.id, s.path);
+    sessionIndex.rememberPath(s.id, s.path);
     const project = s.cwd ? projectByCwd.get(s.cwd) : undefined;
     return {
       path: s.path,
@@ -66,113 +62,12 @@ async function listAllSessionsFallback(): Promise<SessionInfo[]> {
   });
 }
 
-// Session path cache: sessionId → absolute file path. Its lifetime is bounded
-// by the Agent Host utility process.
-const sessionPathCache = new Map<string, string>();
-
-function getPathCache(): Map<string, string> {
-  return sessionPathCache;
-}
-
 export async function resolveSessionPath(sessionId: string): Promise<string | null> {
-  const cached = getPathCache().get(sessionId);
-  if (cached && existsSync(cached)) return cached;
-  if (cached) getPathCache().delete(sessionId);
-
-  const indexed = await sessionIndex.resolvePath(sessionId);
-  if (indexed) getPathCache().set(sessionId, indexed);
-  return indexed;
-}
-
-export function cacheSessionPath(sessionId: string, filePath: string): void {
-  getPathCache().set(sessionId, filePath);
+  return sessionIndex.resolvePath(sessionId);
 }
 
 export function getSessionIndexMetrics() {
   return sessionIndex.getMetrics();
-}
-
-export function invalidateSessionPathCache(sessionId: string): void {
-  getPathCache().delete(sessionId);
-}
-
-function findCachedSessionId(filePath: string): string | undefined {
-  for (const [id, cachedPath] of getPathCache()) {
-    if (cachedPath === filePath) return id;
-  }
-  return undefined;
-}
-
-function getMessageTextContent(message: unknown): string {
-  if (!message || typeof message !== "object") return "";
-  const content = (message as { content?: unknown }).content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter(
-      (block): block is { type: "text"; text: string } =>
-        Boolean(block) &&
-        typeof block === "object" &&
-        (block as { type?: unknown }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string",
-    )
-    .map((block) => block.text)
-    .join(" ");
-}
-
-function getMessageActivityTime(entry: SessionEntry): number | undefined {
-  if (entry.type !== "message") return undefined;
-  const message = entry.message as unknown as { role?: unknown; timestamp?: unknown };
-  if (message.role !== "user" && message.role !== "assistant") return undefined;
-  if (!getMessageTextContent(entry.message)) return undefined;
-  if (typeof message.timestamp === "number") return message.timestamp;
-  const parsed = Date.parse(entry.timestamp);
-  return Number.isNaN(parsed) ? undefined : parsed;
-}
-
-/** Build the Desktop SessionInfo for one already-open session without scanning all session files. */
-export async function buildSessionInfoFromManager(
-  filePath: string,
-  manager: SessionManager,
-  entries: SessionEntry[],
-  options: { resolveProjectInfo?: boolean } = {},
-): Promise<SessionInfo | null> {
-  const header = manager.getHeader();
-  if (!header) return null;
-
-  cacheSessionPath(header.id, filePath);
-  let messageCount = 0;
-  let firstMessage = "";
-  let lastActivityTime: number | undefined;
-  for (const entry of entries) {
-    if (entry.type !== "message") continue;
-    messageCount += 1;
-    const activityTime = getMessageActivityTime(entry);
-    if (activityTime !== undefined) lastActivityTime = Math.max(lastActivityTime ?? 0, activityTime);
-    const message = entry.message as unknown as { role?: unknown };
-    if (!firstMessage && message.role === "user") firstMessage = getMessageTextContent(entry.message);
-  }
-
-  const headerTime = Date.parse(header.timestamp);
-  const created = Number.isNaN(headerTime) ? header.timestamp : new Date(headerTime).toISOString();
-  const modified = lastActivityTime === undefined ? created : new Date(lastActivityTime).toISOString();
-  const project = header.cwd && options.resolveProjectInfo !== false ? await resolveProject(header.cwd) : undefined;
-  const parentSessionId = header.parentSession ? findCachedSessionId(header.parentSession) : undefined;
-
-  return {
-    path: filePath,
-    id: header.id,
-    cwd: header.cwd,
-    name: manager.getSessionName(),
-    created,
-    modified,
-    messageCount,
-    firstMessage: firstMessage || "(no messages)",
-    ...(parentSessionId ? { parentSessionId } : {}),
-    projectRoot: project?.projectRoot ?? header.cwd,
-    ...(project?.isWorktree && project.branch ? { worktreeBranch: project.branch } : {}),
-    ...forkSessionInfoPatch(entries),
-  };
 }
 
 export function getSessionEntries(filePath: string): SessionEntry[] {

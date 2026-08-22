@@ -23,14 +23,8 @@ import {
 import { ToolchainError } from "../shared/toolchains/errors";
 import type { BrowserService } from "./browser/browser-service";
 import { BrowserError } from "./browser/browser-error";
-import {
-  bundledPiCliPath,
-  createLatestSessionDisplayStarter,
-} from "./fork/session-display";
-import {
-  createRemoteSessionDisplayManager,
-  type RemoteSessionDisplayManager,
-} from "./fork/remote-session-display";
+import { bundledPiCliPath, createLatestSessionDisplayStarter } from "./fork/session-display-attachment";
+import { createRemoteSessionDisplayManager, type RemoteSessionDisplayManager } from "./fork/remote-session-display";
 import type { SessionDisplayAction, SessionDisplayDockState } from "../shared/session-display";
 import { isTrustedDesktopIpcSender } from "./ipc-trust";
 import type {
@@ -242,8 +236,7 @@ export function installDesktopIpc(options: DesktopIpcOptions): RemoteSessionDisp
   const startSelectedSessionDisplay = createLatestSessionDisplayStarter({
     resolveNodeExecutable,
     program: bundledPiCliPath,
-    start: (session, remount) =>
-      sessionDisplayManager.start(session, undefined, remount),
+    start: (session, remount) => sessionDisplayManager.start(session, undefined, remount),
     onError(selected, error) {
       const message = error instanceof Error ? error.message : String(error);
       emitSessionDisplayError({

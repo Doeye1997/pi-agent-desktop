@@ -77,10 +77,7 @@ export function readTuiUsageLabel(directory: string, sessionId: string): string 
   }
 }
 
-export function overlayDockUsage<T extends { usageLabel: string }>(
-  state: T,
-  usageLabel: string | undefined,
-): T {
+export function overlayDockUsage<T extends { usageLabel: string }>(state: T, usageLabel: string | undefined): T {
   const label = usageLabel?.trim();
   if (!label) return state;
   return { ...state, usageLabel: label };

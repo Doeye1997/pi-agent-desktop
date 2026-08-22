@@ -51,6 +51,9 @@ export type SessionDisplaySession = {
   program: string;
 };
 
+export type SessionDisplayStartResult =
+  { action: "spawn" | "focus"; sessionId: string } | { action: "error"; sessionId: string };
+
 export type SessionDisplayErrorCode =
   "HOST_UNAVAILABLE" | "HOST_EXITED" | "HOST_PROTOCOL_ERROR" | "INVALID_PARENT_WINDOW";
 

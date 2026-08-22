@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createLatestSessionDisplayStarter, createSessionDisplayManager } from "./session-display.ts";
+import { createSessionDisplayManager } from "./session-display.ts";
 
 function createFakeHost() {
   const calls = [];
@@ -78,7 +78,10 @@ test("sidebar switching focuses mounted sessions without killing their backgroun
   assert.equal(host.calls[2][0], "mount");
   assert.equal(host.calls[2][1].session.sessionId, "sess-2");
   assert.deepEqual(host.calls[3], ["focus", "sess-1"]);
-  assert.equal(host.calls.some(([operation]) => operation === "kill"), false);
+  assert.equal(
+    host.calls.some(([operation]) => operation === "kill"),
+    false,
+  );
 });
 
 test("explicit session relocation remounts only that session", () => {
@@ -97,12 +100,18 @@ test("explicit session relocation remounts only that session", () => {
     manager.start(request({ cwd: "F:/project-two", sessionPath: "F:/PiData/moved.jsonl" }), undefined, true).action,
     "spawn",
   );
-  assert.deepEqual(host.calls.slice(1).map(([operation]) => operation), ["kill", "mount"]);
+  assert.deepEqual(
+    host.calls.slice(1).map(([operation]) => operation),
+    ["kill", "mount"],
+  );
   manager.start(request({ cwd: "F:/project-three", sessionPath: "F:/PiData/moved-again.jsonl" }), undefined, true);
   emit({ type: "mark", sessionId: "sess-1", mark: "dead" });
   emit({ type: "mark", sessionId: "sess-1", mark: "dead" });
   assert.equal(manager.snapshotMarks()["sess-1"], "running");
-  assert.equal(host.calls.some(([operation]) => operation === "dead"), false);
+  assert.equal(
+    host.calls.some(([operation]) => operation === "dead"),
+    false,
+  );
 });
 
 test("session display forwards composer, resize, native bounds, and theme operations", () => {
@@ -143,57 +152,6 @@ test("session display applies bounds published before an async session mount", (
   ]);
 });
 
-test("session display ignores an older sidebar selection that resolves after the latest selection", async () => {
-  const resolutions = new Map();
-  const starts = [];
-  const starter = createLatestSessionDisplayStarter({
-    resolveNodeExecutable: (cwd) =>
-      new Promise((resolve) => {
-        resolutions.set(cwd, resolve);
-      }),
-    program: () => "F:/bundled/pi-cli.js",
-    start: (session) => starts.push(session),
-    onError: () => assert.fail("selection should not fail"),
-  });
-
-  const older = starter.start({ sessionId: "sess-1", cwd: "F:/project-one" });
-  const latest = starter.start({ sessionId: "sess-2", cwd: "F:/project-two" });
-  resolutions.get("F:/project-two")("C:/Node/latest.exe");
-  await latest;
-  resolutions.get("F:/project-one")("C:/Node/older.exe");
-  await older;
-
-  assert.deepEqual(starts, [
-    {
-      sessionId: "sess-2",
-      cwd: "F:/project-two",
-      nodeExecutable: "C:/Node/latest.exe",
-      program: "F:/bundled/pi-cli.js",
-    },
-  ]);
-});
-
-test("session display stop cancels a selected session before its executable resolves", async () => {
-  let resolveExecutable;
-  const starts = [];
-  const starter = createLatestSessionDisplayStarter({
-    resolveNodeExecutable: () =>
-      new Promise((resolve) => {
-        resolveExecutable = resolve;
-      }),
-    program: () => "F:/bundled/pi-cli.js",
-    start: (session) => starts.push(session),
-    onError: () => assert.fail("cancelled selection should not fail"),
-  });
-
-  const pending = starter.start({ sessionId: "sess-1", cwd: "F:/project-one" });
-  starter.cancel("sess-1");
-  resolveExecutable("C:/Node/node.exe");
-  await pending;
-
-  assert.deepEqual(starts, []);
-});
-
 test("session display forwards dock state and returns native picker actions", () => {
   const host = createFakeHost();
   const actions = [];
@@ -225,9 +183,7 @@ test("session display forwards dock state and returns native picker actions", ()
   emit({ type: "action", sessionId: "sess-1", action: "relocate", value: "F:/project-two" });
 
   assert.deepEqual(host.calls.at(-1), ["dock", "sess-1", state]);
-  assert.deepEqual(actions, [
-    { type: "action", sessionId: "sess-1", action: "relocate", value: "F:/project-two" },
-  ]);
+  assert.deepEqual(actions, [{ type: "action", sessionId: "sess-1", action: "relocate", value: "F:/project-two" }]);
 });
 
 test("session display hides a deselected native child without killing its background session", () => {
@@ -242,7 +198,10 @@ test("session display hides a deselected native child without killing its backgr
 
   assert.deepEqual(host.calls.at(-1), ["hide", "sess-1"]);
   assert.equal(manager.snapshotMarks()["sess-1"], "running");
-  assert.equal(host.calls.some(([type]) => type === "kill"), false);
+  assert.equal(
+    host.calls.some(([type]) => type === "kill"),
+    false,
+  );
 });
 
 test("composer seam forwards one complete Unicode line with CR", () => {
@@ -318,7 +277,10 @@ test("Electron replacement detaches native windows without disposing their TUI s
 
   assert.deepEqual(host.calls.slice(1), [["detach"], ["attach", "hwnd:replacement"]]);
   assert.equal(manager.snapshotMarks()["sess-1"], "running");
-  assert.equal(host.calls.some(([operation]) => operation === "dispose"), false);
+  assert.equal(
+    host.calls.some(([operation]) => operation === "dispose"),
+    false,
+  );
 });
 
 test("stale Electron parent errors keep the live TUI available for reattach", () => {

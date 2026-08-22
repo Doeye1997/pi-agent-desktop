@@ -11,3 +11,4 @@ Default while coding: **M1**.
 - 2026-08-19 Windows Terminal XAML session-display seam: M1
 - 2026-08-20 standalone reconnectable Agent Host: M2
 - 2026-08-21 fenced runtime lifecycle redesign: M2
+- 2026-08-22 architecture deepening (session storage, display ownership, Browser metadata): M2

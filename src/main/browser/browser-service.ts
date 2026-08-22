@@ -30,7 +30,7 @@ import type {
   BrowserSettingsPublic,
   BrowserTabInfo,
 } from "../../contract/browser.ts";
-import { isBrowserHostMethod } from "../../contract/browser.ts";
+import { browserPermissionForMethod, isBrowserAutomationMethod, isBrowserHostMethod } from "../../contract/browser.ts";
 import { BrowserConfirmationManager } from "./browser-confirmation.ts";
 import { BrowserAuthorizationCoordinator } from "./browser-authorization-coordinator.ts";
 import { BrowserDownloadManager } from "./browser-download-manager.ts";
@@ -724,11 +724,7 @@ export class BrowserService {
     if (method === "browser.requestAuthorization") {
       const body = params as BrowserHostParams<"browser.requestAuthorization">;
       if (
-        !isBrowserHostMethod(body.targetMethod) ||
-        body.targetMethod === "browser.capabilities" ||
-        body.targetMethod === "browser.requestAuthorization" ||
-        body.targetMethod === "browser.sessionEnded" ||
-        body.targetMethod === "browser.requestRouteBypass" ||
+        !isBrowserAutomationMethod(body.targetMethod) ||
         typeof body.requestId !== "string" ||
         !body.requestId ||
         body.requestId.length > 256 ||
@@ -737,7 +733,7 @@ export class BrowserService {
       ) {
         throw new BrowserError("INVALID_BROWSER_REQUEST", "Browser authorization preflight is invalid");
       }
-      const minimumPermission = requiredPermission(body.targetMethod);
+      const minimumPermission = browserPermissionForMethod(body.targetMethod);
       const currentSettings = this.policy.getSettings();
       if (body.source === "channel" && !currentSettings.automation.allowChannelSessions) {
         throw new BrowserError("CAPABILITY_DISABLED", "Browser access for channel sessions is disabled");
@@ -788,7 +784,10 @@ export class BrowserService {
         "browser.capabilities" | "browser.requestAuthorization" | "browser.sessionEnded" | "browser.requestRouteBypass"
       >
     >;
-    const permission = requiredPermission(method);
+    if (!isBrowserAutomationMethod(method)) {
+      throw new BrowserError("INVALID_BROWSER_REQUEST", "Browser command is not available to automation");
+    }
+    const permission = browserPermissionForMethod(method);
     this.policy.assertRequest(context, permission);
 
     switch (method) {
@@ -1352,38 +1351,6 @@ function confirmationCopy(language: BrowserConfirmationLanguage) {
     cancel: "Cancel",
     continue: "Enable for this launch",
   };
-}
-
-function requiredPermission(method: BrowserHostMethod): "read" | "interact" | "advanced" {
-  if (
-    method === "browser.click" ||
-    method === "browser.clickAt" ||
-    method === "browser.type" ||
-    method === "browser.press" ||
-    method === "browser.scroll"
-  ) {
-    return "interact";
-  }
-  if (
-    method === "browser.executeJavaScript" ||
-    method === "browser.getCookies" ||
-    method === "browser.setCookies" ||
-    method === "browser.setRequestHeaderRules" ||
-    method === "browser.setResponseHeaderRules" ||
-    method === "browser.sendCdpCommand" ||
-    method === "browser.networkList" ||
-    method === "browser.networkWait" ||
-    method === "browser.networkBody" ||
-    method === "browser.networkReplay" ||
-    method === "browser.networkSummary" ||
-    method === "browser.consoleList" ||
-    method === "browser.consoleWait" ||
-    method === "browser.pageCodeList" ||
-    method === "browser.pageCodeGet"
-  ) {
-    return "advanced";
-  }
-  return "read";
 }
 
 function previewSnippetResult(value: unknown): string | undefined {

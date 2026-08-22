@@ -60,18 +60,8 @@ import {
   startRpcSession,
   subscribeRunningSessions,
 } from "./rpc-manager";
-import {
-  buildSessionContext,
-  buildSessionInfoFromManager,
-  getSessionIndexMetrics,
-  cacheSessionPath,
-  invalidateSessionPathCache,
-  listAllSessions,
-  resolveSessionPath,
-} from "./session-reader";
+import { buildSessionContext, getSessionIndexMetrics, listAllSessions, resolveSessionPath } from "./session-reader";
 import { isFilePathReferencedBySession } from "./session-file-references";
-import { forkAppendArchived } from "./fork/archive";
-import { relocateSessionFile } from "./session-relocate";
 import {
   addWorktree,
   getGitStatus,
@@ -118,8 +108,10 @@ import {
   readSessionEntryContent,
   StaleHistoryCursorError,
 } from "./session-history";
-import { getSessionContentSnapshot, invalidateSessionContent } from "./session-content-cache";
+import { getSessionContentSnapshot } from "./session-content-cache";
 import { sessionIndex } from "./session-index";
+import { SessionStore } from "./session-store";
+import { canonicalPathForComparison, validateExistingDirectory } from "./directory-path";
 import { credentialStateMatches, recoverCommittedCredential, type CredentialTarget } from "./credential-sync";
 
 type ServiceOnlySessionOptions = Pick<CreateAgentSessionServicesOptions, "cwd" | "agentDir" | "modelRuntimeSignal">;
@@ -241,20 +233,6 @@ function getLanguage(filePath: string): string {
   if (base === "makefile" || base === "gnumakefile") return "makefile";
   const ext = base.split(".").pop() ?? "";
   return EXT_TO_LANGUAGE[ext] ?? "text";
-}
-
-async function emitIndexedSessionChange(server: RpcServer, sessionId: string, cwd: string | null): Promise<void> {
-  try {
-    const filePath = await resolveSessionPath(sessionId);
-    const session = filePath ? await sessionIndex.refreshPath(filePath) : null;
-    if (session) {
-      server.emit("sessions.changed", session.id, { cwd: session.cwd, sessionId: session.id, session });
-      return;
-    }
-  } catch (error) {
-    console.error("[agent-host] failed to refresh changed session:", error);
-  }
-  server.emit("sessions.changed", "*", { cwd, fullRefresh: true });
 }
 
 async function assertPathAllowed(target: string, sourceSessionId?: string): Promise<void> {
@@ -573,44 +551,6 @@ async function hasSessionName(sessionId: string): Promise<boolean> {
   }
 }
 
-function applyLiveSessionNameIfEmpty(sessionId: string, name: string): boolean | null {
-  const existing = getRpcSession(sessionId);
-  if (!existing?.isAlive()) return null;
-  const currentName = existing.inner.sessionName;
-  if (typeof currentName === "string" && currentName.trim().length > 0) return false;
-
-  // Keep the check and write in the same synchronous turn. A manual rename
-  // that ran first is observed above; one that runs later overwrites this
-  // automatic value, so the manual choice always wins.
-  existing.inner.setSessionName(name);
-  return true;
-}
-
-export async function applySessionNameIfEmpty(sessionId: string, name: string): Promise<boolean> {
-  const normalized = name.trim();
-  if (!normalized) return false;
-
-  const liveResult = applyLiveSessionNameIfEmpty(sessionId, normalized);
-  if (liveResult !== null) return liveResult;
-
-  const filePath = await resolveSessionPath(sessionId);
-  if (!filePath) return false;
-
-  // The session may have become live while its path was resolving.
-  const liveResultAfterLookup = applyLiveSessionNameIfEmpty(sessionId, normalized);
-  if (liveResultAfterLookup !== null) return liveResultAfterLookup;
-
-  const manager = SessionManager.open(filePath, undefined);
-  const storedName = manager.getSessionName();
-  if (typeof storedName === "string" && storedName.trim().length > 0) return false;
-
-  // SessionManager's read and append are synchronous, so another Renderer RPC
-  // cannot interleave a manual rename between this final check and the write.
-  manager.appendSessionInfo(normalized);
-  invalidateSessionContent(filePath);
-  return true;
-}
-
 async function resolveTitleSessionTarget(
   sessionId: string,
 ): Promise<{ cwd: string; services?: TitleModelServices } | null> {
@@ -632,32 +572,6 @@ async function resolveTitleSessionTarget(
   const cwd = SessionManager.open(filePath, undefined).getHeader()?.cwd;
   const dir = validateExistingDirectory(cwd);
   return dir.ok ? { cwd: dir.path } : null;
-}
-
-type DirectoryValidation = { ok: true; path: string; canonicalPath: string } | { ok: false; error: string };
-
-function validateExistingDirectory(candidate: unknown): DirectoryValidation {
-  if (typeof candidate !== "string" || !candidate) return { ok: false, error: "Directory does not exist" };
-  try {
-    const realpath = realpathSync.native ?? realpathSync;
-    const canonicalPath = realpath(candidate);
-    if (!statSync(canonicalPath).isDirectory()) return { ok: false, error: "Not a directory" };
-    return { ok: true, path: candidate, canonicalPath };
-  } catch {
-    return { ok: false, error: "Directory does not exist" };
-  }
-}
-
-function canonicalPathForComparison(candidate: string): string {
-  const resolved = path.resolve(candidate);
-  let canonical = resolved;
-  try {
-    const realpath = realpathSync.native ?? realpathSync;
-    canonical = realpath(resolved);
-  } catch {
-    // Historical session cwd values can refer to directories that no longer exist.
-  }
-  return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
 type AvailableModel = Awaited<ReturnType<ModelRuntime["getAvailable"]>>[number];
@@ -761,6 +675,16 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
   const channelManager = new ChannelManager(server, (session, sessionId) =>
     ensureSessionEvents(server, session, sessionId),
   );
+  const sessionStore = new SessionStore({
+    emit(topic, key, data) {
+      server.emit(topic, key, data);
+    },
+    getLiveSession: getRpcSession,
+    clearSessionEventBinding,
+    async notifySessionEnded(sessionId) {
+      await callMain("browser.sessionEnded", { sessionId });
+    },
+  });
   initializeChannels(channelManager);
 
   // Running sessions stream + tray badge signal to connected Electron clients.
@@ -875,7 +799,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
 
         const infoStartedAt = performance.now();
         const [info, agentState] = await Promise.all([
-          buildSessionInfoFromManager(filePath, sm, entries),
+          sessionIndex.buildInfoFromSnapshot(filePath, sm, entries),
           agentStatePromise,
         ]);
         const infoMs = performance.now() - infoStartedAt;
@@ -1006,135 +930,13 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
       return { content: lines.join("\n"), suggestedName: `session-${id}.md` };
     },
 
-    "sessions.delete": async (params) => {
-      const { id, force } = params as { id: string; force?: boolean };
-      const filePath = await resolveSessionPath(id);
-      if (!filePath) throw new RpcError({ code: "NOT_FOUND", message: "Session not found" });
-      const existing = getRpcSession(id);
-      if (existing?.isAlive()) {
-        if (existing.isRunning() && !force) {
-          throw new RpcError({
-            code: "CONFLICT",
-            message: "Session is still running. Stop it before deleting.",
-          });
-        }
-        // ISSUE-001: fully stop agent before unlinking session file
-        await existing.abortAndDispose();
-        clearSessionEventBinding(existing.sessionId || id);
-      }
-      try {
-        unlinkSync(filePath);
-      } catch (e) {
-        throw new RpcError({
-          code: "INTERNAL",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      }
-      invalidateSessionContent(filePath);
-      const deletedSession = sessionIndex.removePath(filePath);
-      invalidateSessionPathCache(id);
-      void callMain("browser.sessionEnded", { sessionId: id }).catch(() => undefined);
-      server.emit("sessions.changed", id, {
-        cwd: deletedSession?.cwd ?? null,
-        sessionId: id,
-        deleted: true,
-      });
-      return { ok: true as const };
-    },
+    "sessions.delete": (params) => sessionStore.delete(params),
 
-    "sessions.rename": async (params) => {
-      const { id, name } = params as { id: string; name: string };
-      if (!name?.trim()) {
-        throw new RpcError({ code: "BAD_REQUEST", message: "name is required" });
-      }
-      const existing = getRpcSession(id);
-      if (existing?.isAlive()) {
-        await existing.send({ type: "set_session_name", name: name.trim() });
-      } else {
-        const filePath = await resolveSessionPath(id);
-        if (!filePath) throw new RpcError({ code: "NOT_FOUND", message: "Session not found" });
-        const sm = SessionManager.open(filePath);
-        // ISSUE-014: SDK uses appendSessionInfo, not setSessionName
-        sm.appendSessionInfo(name.trim());
-        invalidateSessionContent(filePath);
-      }
-      await emitIndexedSessionChange(server, id, null);
-      return { ok: true as const };
-    },
+    "sessions.rename": (params) => sessionStore.rename(params),
 
-    "sessions.setArchived": async (params) => {
-      const { id, archived } = params as { id: string; archived: boolean };
-      if (typeof archived !== "boolean") {
-        throw new RpcError({ code: "BAD_REQUEST", message: "archived is required" });
-      }
-      const existing = getRpcSession(id);
-      if (existing?.isAlive()) {
-        forkAppendArchived(existing.inner.sessionManager, archived);
-      } else {
-        const filePath = await resolveSessionPath(id);
-        if (!filePath) throw new RpcError({ code: "NOT_FOUND", message: "Session not found" });
-        forkAppendArchived(SessionManager.open(filePath), archived);
-        invalidateSessionContent(filePath);
-      }
-      await emitIndexedSessionChange(server, id, null);
-      if (archived && existing?.isAlive()) {
-        void existing.dispose({ abort: true, reason: "archived" });
-      }
-      return { ok: true as const };
-    },
+    "sessions.setArchived": (params) => sessionStore.setArchived(params),
 
-    "sessions.relocate": async (params) => {
-      const { id, cwd } = params as { id: string; cwd: string };
-      const validation = validateExistingDirectory(cwd);
-      if (!validation.ok) {
-        throw new RpcError({ code: "BAD_REQUEST", message: validation.error });
-      }
-      const toCwd = validation.canonicalPath;
-      allowFileRoot(toCwd);
-
-      const existing = getRpcSession(id);
-      if (existing?.isAlive()) {
-        if (existing.isRunning()) {
-          throw new RpcError({
-            code: "CONFLICT",
-            message: "Session is still running. Stop it before changing the working directory.",
-          });
-        }
-        await existing.abortAndDispose();
-        clearSessionEventBinding(existing.sessionId || id);
-      }
-
-      const filePath = await resolveSessionPath(id);
-      if (!filePath) throw new RpcError({ code: "NOT_FOUND", message: "Session not found" });
-      const current = sessionIndex.getByPath(filePath) ?? (await sessionIndex.refreshPath(filePath));
-      const fromCwd = current?.cwd ?? SessionManager.open(filePath).getCwd();
-      if (canonicalPathForComparison(fromCwd) === canonicalPathForComparison(toCwd)) {
-        if (current) return { session: current };
-        const session = await sessionIndex.refreshPath(filePath);
-        if (!session) throw new RpcError({ code: "NOT_FOUND", message: "Session not found" });
-        return { session };
-      }
-
-      let destPath: string;
-      try {
-        destPath = relocateSessionFile(filePath, fromCwd, toCwd);
-      } catch (e) {
-        throw new RpcError({
-          code: "INTERNAL",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      }
-
-      invalidateSessionContent(filePath);
-      invalidateSessionContent(destPath);
-      sessionIndex.removePath(filePath);
-      invalidateSessionPathCache(id);
-      cacheSessionPath(id, destPath);
-      const session = await sessionIndex.refreshPath(destPath);
-      if (!session) throw new RpcError({ code: "INTERNAL", message: "Session index missed relocated file" });
-      server.emit("sessions.changed", session.id, { cwd: session.cwd, sessionId: session.id, session });
-      return { session };
-    },
+    "sessions.relocate": (params) => sessionStore.relocate(params),
 
     "worktrees.list": async (params) => {
       const { projectRoot } = params as { projectRoot: string };
@@ -1242,7 +1044,7 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
 
       const command = rest.type ? rest : { type: "prompt", message: body.message ?? "" };
       const data = await session.send(command as Record<string, unknown>);
-      await emitIndexedSessionChange(server, realSessionId, cwd);
+      await sessionStore.publishChanged(realSessionId, cwd);
       return { sessionId: realSessionId, data };
     },
 
@@ -1305,9 +1107,9 @@ export function registerHandlers(server: RpcServer): () => Promise<void> {
       // Check and write atomically at the live session or SessionManager edge.
       // A concurrent manual rename either runs first and blocks this write, or
       // runs afterwards and replaces the automatic title.
-      if (!(await applySessionNameIfEmpty(sessionId, finalTitle))) return { title: null };
+      if (!(await sessionStore.applyNameIfEmpty(sessionId, finalTitle))) return { title: null };
 
-      await emitIndexedSessionChange(server, sessionId, target.cwd);
+      await sessionStore.publishChanged(sessionId, target.cwd);
       return { title: finalTitle };
     },
 

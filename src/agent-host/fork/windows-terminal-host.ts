@@ -1,7 +1,6 @@
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { join, basename } from "node:path";
+import { basename } from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import type {
   SessionDisplayBounds,
@@ -11,8 +10,10 @@ import type {
   SessionDisplaySize,
   SessionDisplayTheme,
 } from "../../shared/session-display";
-
-export const WINDOWS_TERMINAL_HOST_FILENAME = "pi-session-display-host.exe";
+import {
+  resolveWindowsTerminalHostPath,
+  WINDOWS_TERMINAL_HOST_FILENAME,
+} from "../../shared/windows-terminal-host-path.ts";
 
 export type SessionDisplayHostMount = {
   session: SessionDisplaySession;
@@ -111,24 +112,6 @@ function parseHostEvent(line: string): ParsedHostEvent {
     return { type: "host-error", code: value.code, message: value.message };
   }
   throw new Error("event shape");
-}
-
-export function resolveWindowsTerminalHostPath(
-  env = process.env,
-  resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "",
-  cwd = process.cwd(),
-): string | null {
-  if (process.platform !== "win32") return null;
-  const configured = env.PI_DESKTOP_WINDOWS_TERMINAL_HOST?.trim();
-  const candidates = [
-    configured,
-    resourcesPath ? join(resourcesPath, "wt-xaml-island", WINDOWS_TERMINAL_HOST_FILENAME) : undefined,
-    join(cwd, "build", "toolchains", "windows-terminal", "win-x64", WINDOWS_TERMINAL_HOST_FILENAME),
-    join(cwd, "native", "wt-xaml-island", WINDOWS_TERMINAL_HOST_FILENAME),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  return (
-    candidates.find((candidate) => basename(candidate).toLowerCase() !== "wt.exe" && existsSync(candidate)) ?? null
-  );
 }
 
 function hostError(message: string, code: "HOST_UNAVAILABLE" | "HOST_EXITED" | "HOST_PROTOCOL_ERROR") {

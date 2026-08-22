@@ -5,10 +5,10 @@ import type {
   SessionDisplayMark,
   SessionDisplaySession,
   SessionDisplaySize,
+  SessionDisplayStartResult,
   SessionDisplayTheme,
 } from "../../shared/session-display.ts";
 import type { SessionDisplayControlCommand, SessionDisplayControlEvent } from "../../shared/session-display-control.ts";
-import type { SessionDisplayStartResult } from "./session-display.ts";
 
 export function createRemoteSessionDisplayManager(options: {
   getParentWindowHandle: () => string | null;
@@ -58,8 +58,7 @@ export function createRemoteSessionDisplayManager(options: {
   return {
     start,
     write: (sessionId: string, data: string) => options.send({ type: "write", sessionId, data }),
-    resize: (sessionId: string, cols: number, rows: number) =>
-      options.send({ type: "resize", sessionId, cols, rows }),
+    resize: (sessionId: string, cols: number, rows: number) => options.send({ type: "resize", sessionId, cols, rows }),
     setBounds: (sessionId: string, bounds: import("../../shared/session-display.ts").SessionDisplayBounds) =>
       options.send({ type: "bounds", sessionId, bounds }),
     setTheme: (theme: SessionDisplayTheme) => options.send({ type: "theme", theme }),

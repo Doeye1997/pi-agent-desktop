@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createSessionDisplayService } from "./session-display-service.ts";
-import { tuiUsageMarkPath } from "../main/fork/tui-running-protocol.ts";
+import { tuiUsageMarkPath } from "./fork/tui-running-protocol.ts";
 
 function fakeNativeHost() {
   const calls = [];
@@ -55,9 +55,15 @@ test("Agent Host owns one native TUI while Electron clients detach and reattach"
   service.handle({ type: "start", session, parentWindowHandle: "new-hwnd" });
   assert.deepEqual(service.snapshotStates(), { "session-1": "running-attached" });
 
-  assert.deepEqual(host.calls.map(([operation]) => operation), ["mount", "detach", "attach", "focus"]);
+  assert.deepEqual(
+    host.calls.map(([operation]) => operation),
+    ["mount", "detach", "attach", "focus"],
+  );
   assert.equal(host.calls.filter(([operation]) => operation === "mount").length, 1);
-  assert.equal(host.calls.some(([operation]) => operation === "dispose"), false);
+  assert.equal(
+    host.calls.some(([operation]) => operation === "dispose"),
+    false,
+  );
   service.handle({ type: "kill", sessionId: session.sessionId });
   assert.deepEqual(service.snapshotStates(), { "session-1": "exited" });
 });

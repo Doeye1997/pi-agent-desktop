@@ -962,45 +962,81 @@ export type BrowserHostMethod = keyof BrowserHostRpc;
 export type BrowserHostParams<M extends BrowserHostMethod> = BrowserHostRpc[M]["params"];
 export type BrowserHostResult<M extends BrowserHostMethod> = BrowserHostRpc[M]["result"];
 
+type BrowserInternalMethod =
+  "browser.capabilities" | "browser.requestAuthorization" | "browser.sessionEnded" | "browser.requestRouteBypass";
+
+export type BrowserAutomationMethod = Exclude<BrowserHostMethod, BrowserInternalMethod>;
+
+export type BrowserCommandMetadata =
+  | Readonly<{ availability: "internal"; permission: "none"; screenshotCost: 0 }>
+  | Readonly<{
+      availability: "agent";
+      permission: Exclude<BrowserPermissionLevel, "none">;
+      screenshotCost: 0 | 1 | 2 | "inspect-optional";
+    }>;
+
+export const BROWSER_COMMAND_METADATA = {
+  "browser.capabilities": { availability: "internal", permission: "none", screenshotCost: 0 },
+  "browser.requestAuthorization": { availability: "internal", permission: "none", screenshotCost: 0 },
+  "browser.sessionEnded": { availability: "internal", permission: "none", screenshotCost: 0 },
+  "browser.requestRouteBypass": { availability: "internal", permission: "none", screenshotCost: 0 },
+  "browser.open": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.listTabs": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.navigate": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.snapshot": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.inspect": { availability: "agent", permission: "read", screenshotCost: "inspect-optional" },
+  "browser.screenshot": { availability: "agent", permission: "read", screenshotCost: 1 },
+  "browser.click": { availability: "agent", permission: "interact", screenshotCost: 0 },
+  "browser.clickAt": { availability: "agent", permission: "interact", screenshotCost: 0 },
+  "browser.type": { availability: "agent", permission: "interact", screenshotCost: 0 },
+  "browser.press": { availability: "agent", permission: "interact", screenshotCost: 0 },
+  "browser.scroll": { availability: "agent", permission: "interact", screenshotCost: 0 },
+  "browser.wait": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.back": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.forward": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.reload": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.close": { availability: "agent", permission: "read", screenshotCost: 0 },
+  "browser.executeJavaScript": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.getCookies": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.setCookies": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.setRequestHeaderRules": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.setResponseHeaderRules": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.sendCdpCommand": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.networkList": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.networkWait": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.networkBody": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.networkReplay": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.networkSummary": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.consoleList": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.consoleWait": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.visualCompare": { availability: "agent", permission: "read", screenshotCost: 2 },
+  "browser.pageCodeList": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+  "browser.pageCodeGet": { availability: "agent", permission: "advanced", screenshotCost: 0 },
+} as const satisfies Record<BrowserHostMethod, BrowserCommandMetadata>;
+
+export const BROWSER_HOST_METHODS: ReadonlySet<BrowserHostMethod> = new Set(
+  Object.keys(BROWSER_COMMAND_METADATA) as BrowserHostMethod[],
+);
+
 export function isBrowserHostMethod(method: string): method is BrowserHostMethod {
   return BROWSER_HOST_METHODS.has(method as BrowserHostMethod);
 }
 
-export const BROWSER_HOST_METHODS: ReadonlySet<BrowserHostMethod> = new Set<BrowserHostMethod>([
-  "browser.capabilities",
-  "browser.requestAuthorization",
-  "browser.sessionEnded",
-  "browser.requestRouteBypass",
-  "browser.open",
-  "browser.listTabs",
-  "browser.navigate",
-  "browser.snapshot",
-  "browser.inspect",
-  "browser.screenshot",
-  "browser.click",
-  "browser.clickAt",
-  "browser.type",
-  "browser.press",
-  "browser.scroll",
-  "browser.wait",
-  "browser.back",
-  "browser.forward",
-  "browser.reload",
-  "browser.close",
-  "browser.executeJavaScript",
-  "browser.getCookies",
-  "browser.setCookies",
-  "browser.setRequestHeaderRules",
-  "browser.setResponseHeaderRules",
-  "browser.sendCdpCommand",
-  "browser.networkList",
-  "browser.networkWait",
-  "browser.networkBody",
-  "browser.networkReplay",
-  "browser.networkSummary",
-  "browser.consoleList",
-  "browser.consoleWait",
-  "browser.visualCompare",
-  "browser.pageCodeList",
-  "browser.pageCodeGet",
-]);
+export function isBrowserAutomationMethod(method: string): method is BrowserAutomationMethod {
+  return isBrowserHostMethod(method) && BROWSER_COMMAND_METADATA[method].availability === "agent";
+}
+
+export function browserPermissionForMethod(method: BrowserAutomationMethod): Exclude<BrowserPermissionLevel, "none">;
+export function browserPermissionForMethod(method: BrowserHostMethod): BrowserPermissionLevel;
+export function browserPermissionForMethod(method: BrowserHostMethod): BrowserPermissionLevel {
+  return BROWSER_COMMAND_METADATA[method].permission;
+}
+
+export function browserScreenshotCost(method: BrowserHostMethod, params: unknown): number {
+  const configuredCost = BROWSER_COMMAND_METADATA[method].screenshotCost;
+  if (configuredCost !== "inspect-optional") return configuredCost;
+  if (!params || typeof params !== "object" || Array.isArray(params)) return 0;
+  const screenshot = (params as { screenshot?: unknown }).screenshot;
+  if (!screenshot || typeof screenshot !== "object" || Array.isArray(screenshot)) return 0;
+  return (screenshot as { enabled?: unknown }).enabled === true ? 1 : 0;
+}

@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { BrowserErrorCode, BrowserHostMethod, BrowserRecovery } from "../contract/browser.ts";
+import {
+  browserScreenshotCost,
+  type BrowserErrorCode,
+  type BrowserHostMethod,
+  type BrowserRecovery,
+} from "../contract/browser.ts";
 import { callMain, MainProcessRpcError } from "./parent-rpc.ts";
 
 const REPLAN_CALLS = 30;
@@ -148,13 +153,7 @@ export class BrowserAgentRuntime {
         { retryable: false, reason: "stale-state", remediation: "ask-user" },
       );
     }
-    const screenshotCost =
-      method === "browser.visualCompare"
-        ? 2
-        : method === "browser.screenshot" ||
-            (method === "browser.inspect" && asRecord(params.screenshot).enabled === true)
-          ? 1
-          : 0;
+    const screenshotCost = browserScreenshotCost(method, params);
     if (screenshotCost && state.screenshotCount + screenshotCost > MAX_SCREENSHOTS) {
       throw new BrowserAgentPolicyError(
         "BROWSER_CALL_BUDGET_EXCEEDED",

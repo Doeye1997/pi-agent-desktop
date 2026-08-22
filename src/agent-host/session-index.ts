@@ -2,8 +2,8 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { SessionEntry, SessionInfo } from "../shared/types";
-import { buildSessionInfoFromManager } from "./session-reader";
 import { getProjectCacheRevision, resolveProject } from "../shared/worktree";
+import { forkSessionInfoPatch } from "../shared/session-archive";
 
 const PROJECT_VIEW_TTL_MS = 60_000;
 
@@ -65,9 +65,78 @@ function discoverSessionFiles(root: string): string[] {
   return files;
 }
 
+function getMessageTextContent(message: unknown): string {
+  if (!message || typeof message !== "object") return "";
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (block): block is { type: "text"; text: string } =>
+        Boolean(block) &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )
+    .map((block) => block.text)
+    .join(" ");
+}
+
+function getMessageActivityTime(entry: SessionEntry): number | undefined {
+  if (entry.type !== "message") return undefined;
+  const message = entry.message as unknown as { role?: unknown; timestamp?: unknown };
+  if (message.role !== "user" && message.role !== "assistant") return undefined;
+  if (!getMessageTextContent(entry.message)) return undefined;
+  if (typeof message.timestamp === "number") return message.timestamp;
+  const parsed = Date.parse(entry.timestamp);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+async function buildSessionInfo(
+  filePath: string,
+  manager: SessionManager,
+  entries: SessionEntry[],
+  resolveProjectInfo: boolean,
+): Promise<SessionInfo | null> {
+  const header = manager.getHeader();
+  if (!header) return null;
+
+  let messageCount = 0;
+  let firstMessage = "";
+  let lastActivityTime: number | undefined;
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    messageCount += 1;
+    const activityTime = getMessageActivityTime(entry);
+    if (activityTime !== undefined) lastActivityTime = Math.max(lastActivityTime ?? 0, activityTime);
+    const message = entry.message as unknown as { role?: unknown };
+    if (!firstMessage && message.role === "user") firstMessage = getMessageTextContent(entry.message);
+  }
+
+  const headerTime = Date.parse(header.timestamp);
+  const created = Number.isNaN(headerTime) ? header.timestamp : new Date(headerTime).toISOString();
+  const modified = lastActivityTime === undefined ? created : new Date(lastActivityTime).toISOString();
+  const project = header.cwd && resolveProjectInfo ? await resolveProject(header.cwd) : undefined;
+
+  return {
+    path: filePath,
+    id: header.id,
+    cwd: header.cwd,
+    name: manager.getSessionName(),
+    created,
+    modified,
+    messageCount,
+    firstMessage: firstMessage || "(no messages)",
+    projectRoot: project?.projectRoot ?? header.cwd,
+    ...(project?.isWorktree && project.branch ? { worktreeBranch: project.branch } : {}),
+    ...forkSessionInfoPatch(entries),
+  };
+}
+
 export class SessionIndex {
   private readonly byPath = new Map<string, IndexRecord>();
   private readonly pathById = new Map<string, string>();
+  private readonly rememberedPathById = new Map<string, string>();
   private refreshPromise: Promise<void> | null = null;
   private initialized = false;
   private projectRevision = -1;
@@ -140,7 +209,7 @@ export class SessionIndex {
         const manager = SessionManager.open(filePath);
         const entries = manager.getEntries() as unknown as SessionEntry[];
         const header = manager.getHeader();
-        const info = await buildSessionInfoFromManager(filePath, manager, entries, { resolveProjectInfo });
+        const info = await this.buildInfoFromSnapshot(filePath, manager, entries, resolveProjectInfo);
         const after = fingerprint(filePath);
         if (!sameFingerprint(before, after)) {
           if (attempt === 0) continue;
@@ -170,6 +239,22 @@ export class SessionIndex {
 
   initialize(): Promise<void> {
     return this.refreshAll();
+  }
+
+  async buildInfoFromSnapshot(
+    filePath: string,
+    manager: SessionManager,
+    entries: SessionEntry[],
+    resolveProjectInfo = true,
+  ): Promise<SessionInfo | null> {
+    const info = await buildSessionInfo(filePath, manager, entries, resolveProjectInfo);
+    if (!info) return null;
+    const parentPath = manager.getHeader()?.parentSession;
+    const parentSessionId = parentPath ? this.byPath.get(path.resolve(parentPath))?.info?.id : undefined;
+    return {
+      ...info,
+      ...(parentSessionId ? { parentSessionId } : {}),
+    };
   }
 
   refreshAll(): Promise<void> {
@@ -252,10 +337,22 @@ export class SessionIndex {
   }
 
   removePath(filePath: string): SessionInfo | null {
-    const existing = this.byPath.get(path.resolve(filePath));
-    this.byPath.delete(path.resolve(filePath));
+    const resolved = path.resolve(filePath);
+    const existing = this.byPath.get(resolved);
+    this.byPath.delete(resolved);
+    for (const [sessionId, rememberedPath] of this.rememberedPathById) {
+      if (rememberedPath === resolved) this.rememberedPathById.delete(sessionId);
+    }
     this.rebuildDerivedState();
     return existing?.info ?? null;
+  }
+
+  rememberPath(sessionId: string, filePath: string): void {
+    this.rememberedPathById.set(sessionId, path.resolve(filePath));
+  }
+
+  forgetPath(sessionId: string): void {
+    this.rememberedPathById.delete(sessionId);
   }
 
   getByPath(filePath: string): SessionInfo | null {
@@ -271,9 +368,13 @@ export class SessionIndex {
   }
 
   async resolvePath(sessionId: string): Promise<string | null> {
+    const remembered = this.rememberedPathById.get(sessionId);
+    if (remembered && existsSync(remembered)) return remembered;
+    if (remembered) this.rememberedPathById.delete(sessionId);
     if (!this.initialized) await this.initialize();
     const known = this.pathById.get(sessionId);
-    if (known) return known;
+    if (known && existsSync(known)) return known;
+    if (known) this.removePath(known);
     await this.refreshAll();
     return this.pathById.get(sessionId) ?? null;
   }

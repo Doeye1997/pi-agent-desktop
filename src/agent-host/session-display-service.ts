@@ -5,15 +5,15 @@ import type {
   SessionDisplayControlResult,
 } from "../shared/session-display-control.ts";
 import type { SessionDisplayDockState, SessionDisplayHostEvent } from "../shared/session-display.ts";
-import { createSessionDisplayManager } from "../main/fork/session-display.ts";
-import type { SessionDisplayHost } from "../main/fork/windows-terminal-host.ts";
+import { createSessionDisplayManager } from "./fork/session-display.ts";
+import type { SessionDisplayHost } from "./fork/windows-terminal-host.ts";
 import type { SessionRuntimeState } from "../shared/runtime-registry.ts";
 import {
   createTuiRunningReporterChannel,
   overlayDockUsage,
   readTuiUsageLabel,
   tuiRunningDir,
-} from "../main/fork/tui-running-protocol.ts";
+} from "./fork/tui-running-protocol.ts";
 
 export function createSessionDisplayService(options: {
   emit: (event: SessionDisplayControlEvent) => void;
