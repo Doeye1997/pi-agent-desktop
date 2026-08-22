@@ -573,6 +573,14 @@ export class HostManager {
   }
 
   private queueSessionDisplayRequest(request: PendingSessionDisplayRequest): void {
+    if (request.command.type === "start") {
+      // A start selects the visible TUI, so only the latest unacknowledged selection remains current.
+      for (const [requestId, pending] of this.pendingSessionDisplayRequests) {
+        if (pending.command.type === "start") {
+          this.pendingSessionDisplayRequests.delete(requestId);
+        }
+      }
+    }
     if (this.pendingSessionDisplayRequests.size >= 512) {
       const oldestRequestId = this.pendingSessionDisplayRequests.keys().next().value;
       if (typeof oldestRequestId === "string") {
@@ -592,19 +600,24 @@ export class HostManager {
     const connectionGeneration = connection.generation ?? 0;
     if (request.generation === null) request.generation = connectionGeneration;
     if (request.generation !== connectionGeneration) {
-      this.pendingSessionDisplayRequests.delete(request.requestId);
-      if (request.timer) clearTimeout(request.timer);
-      request.reject?.(
-        new Error(
-          `Session display owner changed from generation ${request.generation} to ${connectionGeneration}`,
-        ),
-      );
-      if (!request.reject) {
+      if (request.command.type === "start") {
         appendMainLog(
-          `session-display request dropped after owner generation changed ${request.generation}->${connectionGeneration}`,
+          `session-display start replayed after owner generation changed ${request.generation}->${connectionGeneration}`,
         );
+        request.generation = connectionGeneration;
+      } else {
+        this.pendingSessionDisplayRequests.delete(request.requestId);
+        if (request.timer) clearTimeout(request.timer);
+        request.reject?.(
+          new Error(`Session display owner changed from generation ${request.generation} to ${connectionGeneration}`),
+        );
+        if (!request.reject) {
+          appendMainLog(
+            `session-display request dropped after owner generation changed ${request.generation}->${connectionGeneration}`,
+          );
+        }
+        return;
       }
-      return;
     }
     if (!connection.identityVerified) {
       connection.sendControl({

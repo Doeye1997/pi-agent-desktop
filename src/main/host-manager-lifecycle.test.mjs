@@ -164,6 +164,75 @@ test("HostManager reconnects the Electron display client to the persistent Host"
   assert.deepEqual(events[0], { type: "marks", marks: { "tui-session": "running" } });
 });
 
+test("HostManager replays the latest TUI selection after the Host generation changes", async (t) => {
+  const userDataDirectory = mkdtempSync(path.join(tmpdir(), "pi-host-display-generation-"));
+  const initialControls = [];
+  const replacementControls = [];
+  let server = await startStandaloneHostServer({
+    userDataDirectory,
+    hostVersion: "test",
+    rpcServer: createRpcServer(),
+    isBusy: () => true,
+    onControl: (message) => initialControls.push(message),
+  });
+  const manager = new HostManager("unused", {
+    userDataDirectory,
+    hostVersion: "test",
+    environment: { PI_DESKTOP_HOST_EXTERNAL_SUPERVISOR: "1" },
+  });
+  manager.start();
+  t.after(async () => {
+    await manager.stop();
+    await server.close();
+    rmSync(userDataDirectory, { recursive: true, force: true });
+  });
+
+  await waitFor(() => manager.getStatus() === "ready", "initial display Host connection");
+  const createStartCommand = (sessionId) => ({
+    type: "start",
+    session: {
+      sessionId,
+      cwd: "C:\\workspace",
+      nodeExecutable: "C:\\node.exe",
+      program: "C:\\pi.js",
+    },
+    parentWindowHandle: "window-handle",
+  });
+  manager.sendSessionDisplayCommand(createStartCommand("superseded-session"));
+  manager.sendSessionDisplayCommand(createStartCommand("latest-session"));
+  await waitFor(
+    () =>
+      initialControls.filter(
+        (message) => message.type === "session-display-request" && message.request?.command?.type === "start",
+      ).length === 2,
+    "initial TUI selections",
+  );
+
+  await server.close();
+  server = await startStandaloneHostServer({
+    userDataDirectory,
+    hostVersion: "test",
+    rpcServer: createRpcServer(),
+    isBusy: () => false,
+    onControl: (message) => replacementControls.push(message),
+  });
+  await waitFor(() => manager.getStatus() === "ready", "replacement display Host connection");
+  const replayedStarts = await waitFor(
+    () => {
+      const starts = replacementControls.filter(
+        (message) => message.type === "session-display-request" && message.request?.command?.type === "start",
+      );
+      return starts.length > 0 ? starts : null;
+    },
+    "replayed TUI selection",
+    1_000,
+  );
+
+  assert.equal(replayedStarts.length, 1);
+  assert.equal(replayedStarts[0].request.command.session.sessionId, "latest-session");
+  assert.equal(replayedStarts[0].request.generation, server.generation);
+});
+
 test("HostManager uses the supervisor's development Host version", async (t) => {
   const userDataDirectory = mkdtempSync(path.join(tmpdir(), "pi-host-version-lifecycle-"));
   const controls = [];
