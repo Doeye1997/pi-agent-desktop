@@ -72,6 +72,11 @@ test("native host mounts an IME TextBox overlay and submits one complete line", 
   assert.ok(writeIndex >= 0);
   assert.ok(clearIndex > writeIndex);
   assert.match(hostSource, /termControl\.PointerPressed\([\s\S]*Focus\(FocusState::Pointer\)/);
+  assert.match(
+    hostSource,
+    /void focus\(const std::string& sessionId\)[\s\S]*SetFocus\(session->island\);[\s\S]*XamlSourceFocusNavigationRequest[\s\S]*session->xamlSource\.NavigateFocus[\s\S]*session->keepComposerFocused\(\)/,
+  );
+  assert.match(hostSource, /enableXamlIslandFocus[\s\S]*GWL_STYLE[\s\S]*WS_TABSTOP/);
 });
 
 test("native host skill picker stays in-tree and filters slash input", () => {

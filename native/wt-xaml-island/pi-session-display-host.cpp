@@ -83,6 +83,8 @@ using winrt::Windows::UI::Xaml::Input::KeyRoutedEventArgs;
 using winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs;
 using winrt::Windows::UI::Xaml::Media::SolidColorBrush;
 using winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource;
+using winrt::Windows::UI::Xaml::Hosting::XamlSourceFocusNavigationReason;
+using winrt::Windows::UI::Xaml::Hosting::XamlSourceFocusNavigationRequest;
 using winrt::Windows::UI::Xaml::Markup::IXamlMetadataProvider;
 using winrt::Microsoft::Toolkit::Win32::UI::XamlHost::XamlApplication;
 using winrt::Microsoft::Terminal::Control::IControlAppearance;
@@ -224,6 +226,12 @@ namespace
         }
 
         SetWindowPos(window, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+    }
+
+    void enableXamlIslandFocus(HWND window)
+    {
+        const auto currentStyle = GetWindowLongPtrW(window, GWL_STYLE);
+        SetWindowLongPtrW(window, GWL_STYLE, currentStyle | WS_TABSTOP);
     }
 
     void detachSessionHostWindow(HWND window, HWND parkingWindow)
@@ -1573,6 +1581,7 @@ namespace
             try
             {
                 winrt::check_hresult(interop->get_WindowHandle(&islandWindow));
+                enableXamlIslandFocus(islandWindow);
             }
             catch (const winrt::hresult_error& error)
             {
@@ -1839,7 +1848,9 @@ namespace
                 ShowWindow(candidate->host, candidateId == sessionId ? SW_SHOW : SW_HIDE);
             }
             SetFocus(session->island);
-            session->termControl.Focus(FocusState::Programmatic);
+            const auto focusRequest = XamlSourceFocusNavigationRequest(XamlSourceFocusNavigationReason::Programmatic);
+            session->xamlSource.NavigateFocus(focusRequest);
+            session->keepComposerFocused();
             BringWindowToTop(session->host);
         }
 
@@ -2026,6 +2037,7 @@ namespace
             {
                 winrt::check_hresult(interop->AttachToWindow(hostWindow));
                 winrt::check_hresult(interop->get_WindowHandle(&islandWindow));
+                enableXamlIslandFocus(islandWindow);
                 ShowWindow(islandWindow, SW_HIDE);
                 attachSessionHostWindow(hostWindow, parentHandle);
                 source.Content(session->rootGrid);
