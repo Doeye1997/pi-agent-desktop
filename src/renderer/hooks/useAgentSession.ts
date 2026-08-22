@@ -108,6 +108,9 @@ function streamReducer(state: StreamingState, action: StreamAction): StreamingSt
 
 interface AgentEvent {
   type: string;
+  toolCallId?: unknown;
+  toolName?: unknown;
+  partialResult?: unknown;
   [key: string]: unknown;
 }
 

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -141,9 +141,15 @@ export function watchTuiRunningMarks(
   onUsage?: (sessionId: string, usageLabel: string) => void,
 ): () => void {
   mkdirSync(directory, { recursive: true });
+  let watchDirectory = directory;
+  try {
+    watchDirectory = realpathSync.native(directory);
+  } catch {
+    // The directory was created above; keep the original path only if canonicalization still fails.
+  }
   let watcher: FSWatcher | undefined;
   try {
-    watcher = watch(directory, { persistent: false }, (_event, filename) => {
+    watcher = watch(watchDirectory, { persistent: false }, (_event, filename) => {
       const name = typeof filename === "string" ? filename : filename != null ? String(filename) : "";
       if (!name || name === TUI_RUNNING_REPORTER_NAME || name.startsWith("tui-launcher-")) return;
       if (name.endsWith(".usage")) {

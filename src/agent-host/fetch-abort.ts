@@ -1,4 +1,4 @@
-function signalOf(input: RequestInfo | URL, init?: RequestInit): AbortSignal | undefined {
+function signalOf(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): AbortSignal | undefined {
   if (init?.signal) return init.signal;
   if (typeof Request !== "undefined" && input instanceof Request) return input.signal;
   return undefined;

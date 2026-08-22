@@ -6,18 +6,27 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-const { AdapterRegistry, ChannelManager } = await importTestBundle("src/agent-host/channels/channel-manager", {
-  packages: "external",
-  stdin: {
-    contents: [
-      'export { AdapterRegistry } from "./adapter-registry.ts";',
-      'export { ChannelManager } from "./channel-manager.ts";',
-    ].join("\n"),
-    resolveDir: import.meta.dirname,
-    sourcefile: "channel-manager-test-entry.ts",
-    loader: "ts",
+const { AdapterRegistry, ChannelManager: ProductionChannelManager } = await importTestBundle(
+  "src/agent-host/channels/channel-manager",
+  {
+    packages: "external",
+    stdin: {
+      contents: [
+        'export { AdapterRegistry } from "./adapter-registry.ts";',
+        'export { ChannelManager } from "./channel-manager.ts";',
+      ].join("\n"),
+      resolveDir: import.meta.dirname,
+      sourcefile: "channel-manager-test-entry.ts",
+      loader: "ts",
+    },
   },
-});
+);
+
+class ChannelManager extends ProductionChannelManager {
+  constructor(server, bindSessionEvents, options = {}) {
+    super(server, bindSessionEvents, { ...options, isInboundEnabled: () => true });
+  }
+}
 
 function createFakeAdapter(id = "weixin") {
   let inbound;

@@ -76,7 +76,7 @@ test("media staging refuses a symlinked root", async () => {
   const real = path.join(parent, "real");
   mkdirSync(real);
   const link = path.join(parent, "link");
-  await symlink(real, link, "dir");
+  await symlink(real, link, process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(new ChannelMediaStore(link).initialize(), /不是安全的本地目录/);
 });
 

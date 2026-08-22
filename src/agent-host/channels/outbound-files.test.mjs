@@ -1,7 +1,7 @@
 import { importTestBundle } from "#test-bundle";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { realpath, utimes, writeFile } from "node:fs/promises";
+import { realpath, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -37,11 +37,12 @@ test("explicitly linked existing and newly created workspace files are authorize
 
 test("symlinks escaping the bound workspace are never authorized", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "pi-outbound-root-"));
-  const outside = path.join(tmpdir(), `pi-outside-${process.pid}.txt`);
+  const outsideDirectory = mkdtempSync(path.join(tmpdir(), "pi-outbound-outside-"));
+  const outside = path.join(outsideDirectory, "outside.txt");
   await writeFile(outside, "outside");
-  const link = path.join(cwd, "outside.txt");
-  const { symlink } = await import("node:fs/promises");
-  await symlink(outside, link);
+  const linkedDirectory = path.join(cwd, "outside");
+  await symlink(outsideDirectory, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+  const link = path.join(linkedDirectory, "outside.txt");
   const result = await collectOutboundFiles({
     cwd,
     finalText: `[outside](${link})`,

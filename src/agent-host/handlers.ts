@@ -561,7 +561,7 @@ async function resolveTitleSessionTarget(
     return {
       cwd: dir.path,
       services: {
-        modelRuntime: existing.inner.modelRuntime as unknown as TitleSessionServices["modelRuntime"],
+        modelRuntime: existing.inner.modelRuntime as unknown as TitleModelServices["modelRuntime"],
         settingsManager: existing.inner.settingsManager,
       },
     };

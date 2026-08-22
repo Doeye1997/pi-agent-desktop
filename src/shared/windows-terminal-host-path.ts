@@ -3,9 +3,14 @@ import { basename, join } from "node:path";
 
 export const WINDOWS_TERMINAL_HOST_FILENAME = "pi-session-display-host.exe";
 
+function defaultResourcesPath(): string {
+  const resourcesPath = (process as typeof process & { resourcesPath?: unknown }).resourcesPath;
+  return typeof resourcesPath === "string" ? resourcesPath : "";
+}
+
 export function resolveWindowsTerminalHostPath(
   env = process.env,
-  resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "",
+  resourcesPath = defaultResourcesPath(),
   cwd = process.cwd(),
 ): string | null {
   if (process.platform !== "win32") return null;

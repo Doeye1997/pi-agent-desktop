@@ -44,6 +44,7 @@ export type ChannelManagerOptions = {
   registry?: AdapterRegistry;
   secretAccess?: SecretAccess;
   bridge?: Pick<PiSessionBridge, "getSessionStatus" | "newSession" | "runCommand" | "runTurn" | "syncTools">;
+  isInboundEnabled?: () => boolean;
 };
 
 const PAIRING_TTL_MS = 10 * 60_000;
@@ -137,6 +138,7 @@ export class ChannelManager {
     "getSessionStatus" | "newSession" | "runCommand" | "runTurn" | "syncTools"
   >;
   private readonly secretAccess: SecretAccess;
+  private readonly isInboundEnabled: () => boolean;
   private readonly runtimes = new Map<string, RuntimeEntry>();
   private readonly starting = new Map<string, StartingEntry>();
   private readonly statuses = new Map<string, ChannelStatus>();
@@ -156,6 +158,7 @@ export class ChannelManager {
     this.media = new ChannelMediaStore(path.join(base, "channel-media"));
     this.registry = options.registry ?? new AdapterRegistry();
     this.bridge = options.bridge ?? new PiSessionBridge(bindSessionEvents);
+    this.isInboundEnabled = options.isInboundEnabled ?? isChannelInboundEnabled;
     this.secretAccess = options.secretAccess ?? {
       get: async (channel, accountId) => {
         const value = await callMain<unknown>("channelSecrets.get", { key: secretKey(channel, accountId) });
@@ -833,7 +836,7 @@ export class ChannelManager {
 
   private async handleInbound(envelope: InboundEnvelope): Promise<void> {
     await this.lanes.run(routeKey(envelope), async () => {
-      if (!isChannelInboundEnabled()) {
+      if (!this.isInboundEnabled()) {
         this.addActivity({
           channel: envelope.channel,
           accountId: envelope.accountId,
